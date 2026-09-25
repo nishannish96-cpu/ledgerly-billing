@@ -80,7 +80,7 @@ function syncOverviewGreeting() {
 	if (!pageHeading || state.view !== 'overview') return;
 	const displayName = activeUsername.split('@')[0].replace(/[._-]+/g, ' ').replace(/\b\w/g, character => character.toUpperCase());
 	pageHeading.querySelector('.eyebrow').textContent = formatSystemDateTime();
-	pageHeading.querySelector('h1').textContent = `Hi, ${displayName}`;
+	pageHeading.querySelector('h1').textContent = `Hello, ${displayName}`;
 }
 function recordInventoryChange(product, change, reason, reference = '') { state.inventoryHistory.unshift({ product: product.name, sku: product.id, change, reason, reference, date: formatSystemDateTime() }); }
 const money = value => `SAR ${value.toFixed(2)}`;
