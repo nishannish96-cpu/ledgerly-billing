@@ -1,0 +1,19 @@
+{
+  "name": "Ledgerly",
+  "short_name": "Ledgerly",
+  "description": "Retail finance workspace for invoices, inventory, returns, and payments.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#fbfcfa",
+  "theme_color": "#277252",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "./icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

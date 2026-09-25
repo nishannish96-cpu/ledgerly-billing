@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#277252" />
+  <link rel="manifest" href="manifest.json" />
+  <title>Sign in | Ledgerly</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="login.css?v=2" />
+</head>
+<body>
+  <main class="login-shell">
+    <section class="login-intro">
+      <div class="brand"><span class="brand-mark">L</span><span>ledgerly</span></div>
+      <div class="intro-copy">
+        <p class="eyebrow">Retail finance workspace</p>
+        <h1>Keep every sale in view.</h1>
+        <p>Invoices, inventory, returns, and payment history in one calm workspace.</p>
+      </div>
+      <div class="intro-footer"><span class="intro-dot"></span><span>Secure local workspace</span></div>
+    </section>
+    <section class="login-panel">
+      <div class="login-card">
+        <div class="mobile-brand"><span class="brand-mark">L</span><span>ledgerly</span></div>
+        <p class="eyebrow">Welcome back</p>
+        <h2>Sign in to Ledgerly</h2>
+        <p class="login-copy">Use your workspace credentials to continue.</p>
+        <form id="login-form">
+          <label>Username<input id="login-email" type="text" autocomplete="username" placeholder="Enter your username" required /></label>
+          <label>Password<div class="password-field"><input id="login-password" type="password" autocomplete="current-password" placeholder="Enter your password" required /><button class="password-toggle" type="button" data-password-target="login-password" aria-label="Show password">◉</button></div></label>
+          <div class="form-row"><label class="remember"><input id="remember-me" type="checkbox" checked /> <span>Remember me</span></label><a href="#" id="forgot-link">Forgot password?</a></div>
+          <button class="login-button" type="submit">Sign in <span aria-hidden="true">→</span></button>
+          <p class="login-error" id="login-error" role="alert" hidden>Enter the demo credentials to continue.</p>
+        </form>
+        <form id="create-form" hidden>
+          <label>Username<input id="create-username" type="text" autocomplete="username" placeholder="Choose a username" required /></label>
+          <label>Password<div class="password-field"><input id="create-password" type="password" autocomplete="new-password" placeholder="Create a password" minlength="6" required /><button class="password-toggle" type="button" data-password-target="create-password" aria-label="Show password">◉</button></div></label>
+          <label>Confirm password<div class="password-field"><input id="create-password-confirm" type="password" autocomplete="new-password" placeholder="Repeat your password" required /><button class="password-toggle" type="button" data-password-target="create-password-confirm" aria-label="Show password">◉</button></div></label>
+          <button class="login-button" type="submit">Create account <span aria-hidden="true">→</span></button>
+          <p class="login-error" id="create-error" role="alert" hidden></p>
+          <p class="login-success" id="create-success" role="status" hidden></p>
+        </form>
+        <p class="account-switch"><span id="switch-copy">Need an account?</span> <button class="account-switch-button" type="button" id="create-account-link">Create account</button></p>
+        <p class="demo-note">Local mode credentials can be changed from Settings.</p>
+      </div>
+      <p class="copyright">Ledgerly workspace · Local mode</p>
+    </section>
+  </main>
+  <script>if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js');</script>
+  <script>
+    const form = document.getElementById('login-form');
+    const createForm = document.getElementById('create-form');
+    const error = document.getElementById('login-error');
+    const createError = document.getElementById('create-error');
+    const createSuccess = document.getElementById('create-success');
+    const forgotLink = document.getElementById('forgot-link');
+    const createAccountLink = document.getElementById('create-account-link');
+    const switchCopy = document.getElementById('switch-copy');
+
+    document.querySelectorAll('.password-toggle').forEach(toggle => {
+      toggle.addEventListener('click', () => {
+        const passwordInput = document.getElementById(toggle.dataset.passwordTarget);
+        const isVisible = passwordInput.type === 'text';
+        passwordInput.type = isVisible ? 'password' : 'text';
+        toggle.textContent = isVisible ? '◉' : '◌';
+        toggle.setAttribute('aria-label', isVisible ? 'Show password' : 'Hide password');
+      });
+    });
+
+    function readWorkspace() {
+      try {
+        return JSON.parse(localStorage.getItem('ledgerly-state') || 'null') || {};
+      } catch {
+        return {};
+      }
+    }
+
+    function showCreateForm(showCreate) {
+      form.hidden = showCreate;
+      createForm.hidden = !showCreate;
+      error.hidden = true;
+      createError.hidden = true;
+      createSuccess.hidden = true;
+      switchCopy.textContent = showCreate ? 'Already have an account?' : 'Need an account?';
+      createAccountLink.textContent = showCreate ? 'Sign in' : 'Create one';
+      (showCreate ? document.getElementById('create-username') : document.getElementById('login-email')).focus();
+    }
+
+    async function requestAccount(path, username, password) {
+      const response = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username, password }) });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Unable to complete the request.');
+      return result.user;
+    }
+
+    form.addEventListener('submit', async event => {
+      event.preventDefault();
+      const email = document.getElementById('login-email').value.trim().toLowerCase();
+      const password = document.getElementById('login-password').value;
+      try {
+        const user = await requestAccount('/api/login', email, password);
+        sessionStorage.setItem('ledgerly-auth', 'true');
+        sessionStorage.setItem('ledgerly-user', user.username);
+        sessionStorage.setItem('ledgerly-role', user.role);
+        window.location.href = 'billing.html';
+      } catch (requestError) {
+        error.textContent = requestError.message;
+        error.hidden = false;
+      }
+    });
+
+    createForm.addEventListener('submit', async event => {
+      event.preventDefault();
+      const username = document.getElementById('create-username').value.trim().toLowerCase();
+      const password = document.getElementById('create-password').value;
+      const confirmation = document.getElementById('create-password-confirm').value;
+      createError.hidden = true;
+      createSuccess.hidden = true;
+      if (password !== confirmation) {
+        createError.textContent = 'Passwords do not match.';
+        createError.hidden = false;
+        return;
+      }
+      try {
+    await requestAccount('/api/register', username, password);
+    localStorage.removeItem(`ledgerly-state:${username}`);
+    sessionStorage.setItem('ledgerly-new-account', username);
+        createForm.reset();
+        showCreateForm(false);
+        document.getElementById('login-email').value = username;
+        createSuccess.textContent = 'Account created. Sign in to continue.';
+        createSuccess.hidden = false;
+      } catch (requestError) {
+        createError.textContent = requestError.message;
+        createError.hidden = false;
+      }
+    });
+
+    createAccountLink.addEventListener('click', event => {
+      event.preventDefault();
+      showCreateForm(createForm.hidden);
+    });
+
+    forgotLink.addEventListener('click', event => {
+      event.preventDefault();
+      error.textContent = 'Local mode has no password reset service. Use the demo credentials below.';
+      error.hidden = false;
+    });
+  </script>
+</body>
+</html>

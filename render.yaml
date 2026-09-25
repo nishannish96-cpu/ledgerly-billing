@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: icbilling
+    runtime: python
+    buildCommand: "python -m py_compile server.py"
+    startCommand: "python server.py"
+    healthCheckPath: "/"
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.9"

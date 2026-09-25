@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#277252" />
+  <link rel="manifest" href="manifest.json" />
+  <title>Ledgerly | Billing workspace</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css" />
+  <style>
+    .settings-modal { width: min(680px, 100%); max-height: calc(100vh - 32px); overflow-y: auto; overscroll-behavior: contain; }
+    .settings-modal > h2 { margin-bottom: 8px; }
+    .settings-modal details { border: 1px solid #d8e5dc !important; border-radius: 12px !important; padding: 0 !important; margin-bottom: 12px !important; background: #fbfdfa; overflow: hidden; }
+    .settings-modal summary { padding: 15px 17px; cursor: pointer; color: #1d5d43 !important; background: #f1f7f2; font-size: 13px; font-weight: 700 !important; list-style-position: inside; }
+    .settings-modal details[open] summary { border-bottom: 1px solid #d8e5dc; }
+    .settings-modal details > summary, .settings-users-section > .modal-kicker { width: 100%; height: 60px; min-height: 60px; display: flex; align-items: center; box-sizing: border-box; }
+    .settings-modal details > summary { list-style: none; }
+    .settings-modal details > summary::-webkit-details-marker { display: none; }
+    .settings-modal details > summary::before { content: "▶"; margin-right: 8px; color: #1d5d43; font-size: 11px; }
+    .settings-modal details > div[style*="display:grid"] { display: grid !important; gap: 14px; padding: 17px; margin-top: 0 !important; }
+    .settings-modal details > .form-grid { padding: 17px; margin-top: 0 !important; }
+    .settings-modal #user-management { margin: 0 !important; padding: 17px !important; border-top: 1px solid #d8e5dc; }
+    .settings-modal #user-list { display: grid !important; gap: 8px !important; margin: 10px 0 14px !important; }
+    .settings-modal #user-list > div { background: #fff; border-radius: 8px !important; }
+    .settings-modal #logout-btn { width: fit-content; color: #a64c43 !important; border: 1px solid #e2b8b0 !important; justify-content: center; background: #fff8f6; }
+    .settings-modal #add-user-btn { color: #1d5d43; border: 1px solid #9fc7af; background: #eef8f1; }
+    .settings-modal label[hidden] { display: none !important; }
+    .settings-users-section { width: 100%; height: 60px; min-height: 60px; margin: 0 0 12px !important; border: 1px solid #d8e5dc; border-radius: 12px; padding: 0 !important; background: #fbfdfa; overflow: hidden; box-sizing: border-box; }
+    .settings-users-section > .modal-kicker { margin: 0; padding: 15px 17px; border-bottom: 1px solid #d8e5dc; color: #1d5d43; background: #f1f7f2; font-size: 13px; letter-spacing: 0; text-transform: none; font-weight: 700; }
+    .settings-users-section > .modal-kicker { cursor: pointer; }
+    #user-management.settings-users-section:not(.is-open) > :not(.modal-kicker) { display: none !important; }
+      #user-management.settings-users-section { width: 100% !important; height: auto !important; min-height: 60px !important; margin: 0 0 12px !important; padding: 0 !important; overflow: visible !important; }
+    #user-management.settings-users-section > .modal-kicker { width: 100% !important; height: 60px !important; min-height: 60px !important; margin: 0 !important; padding: 15px 17px !important; display: flex !important; align-items: center !important; }
+    .settings-users-section > .modal-kicker::before { content: "▶"; margin-right: 8px; font-size: 11px; }
+    .settings-users-section > .date-chip { float: right; padding: 5px 10px; border: 1px solid #9fc7af; border-radius: 6px; color: #1d5d43; background: #fff; font-size: 11px; font-weight: 700; }
+    #user-details-toggle { display: none !important; }
+    #settings-btn { display: none !important; }
+    .workspace-switcher[role="button"] { cursor: pointer; }
+    .workspace-switcher[role="button"]:hover { border-color: #9fc7af; background: #f1f8f2; }
+    .account-summary-user { margin-left: 8px; color: #78817e; font-size: 12px; font-weight: 500; }
+    .account-summary-user { display: none; }
+    .account-edit-btn { float: right; padding: 5px 10px; border: 1px solid #9fc7af; border-radius: 6px; color: #1d5d43; background: #fff; font-size: 11px; font-weight: 700; cursor: pointer; }
+    .account-edit-btn:hover { background: #eef8f1; }
+    .settings-password-row { position: relative; }
+    .settings-password-row input { width: 100%; padding-right: 42px; }
+    .settings-password-toggle { position: absolute; top: 50%; right: 8px; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 5px; color: #78817e; background: transparent; cursor: pointer; transform: translateY(-50%); }
+    .settings-password-toggle:hover { color: #1d5d43; background: #eef8f1; }
+    @media (max-width: 600px) {
+      .settings-modal { max-height: calc(100vh - 20px); }
+      .settings-modal .form-grid { grid-template-columns: 1fr !important; }
+    }
+  </style>
+</head>
+<body>
+  <script>if (sessionStorage.getItem('ledgerly-auth') !== 'true') window.location.replace('login.html');</script>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand"><span class="brand-mark">L</span><span>ledgerly</span></div>
+      <div class="workspace-switcher" id="workspace-profile" role="button" tabindex="0" title="Open company profile"><span class="avatar small">AM</span><span><b>Atelier Market</b><small>Company profile</small></span><span class="chevron">⌄</span></div>
+      <nav class="nav-group" aria-label="Primary navigation">
+        <p class="nav-label">Workspace</p>
+        <button class="nav-item active" data-view="overview"><span>◈</span> Overview</button>
+        <button class="nav-item" data-view="invoices"><span>▤</span> Invoices</button>
+        <button class="nav-item" data-view="inventory"><span>▦</span> Inventory</button>
+        <button class="nav-item" data-view="delivery"><span>⌁</span> Delivery notes</button>
+        <button class="nav-item" data-view="returns"><span>↩</span> Returns</button>
+        <p class="nav-label">Manage</p>
+        <button class="nav-item" data-view="customers"><span>♧</span> Customers</button>
+        <button class="nav-item" data-view="reports"><span>⌁</span> Reports</button>
+      </nav>
+      <div class="sidebar-bottom">
+        <div class="help-box"><span class="help-icon">?</span><div><b>Need a hand?</b><small>Explore the quick guide</small></div><span>›</span></div>
+        <button class="nav-item" id="settings-btn"><span>⚙</span> Settings</button>
+        <div class="profile"><span class="avatar" id="current-user-initials">AM</span><span><b id="current-user-name">Alex Morgan</b><small id="current-user-role">Administrator</small></span><span class="more">•••</span></div>
+      </div>
+    </aside>
+    <main class="main-content">
+      <header class="topbar"><div class="breadcrumbs"><span>Workspace</span><b>/</b><strong id="page-title">Overview</strong></div><div class="top-actions"><button class="icon-btn" title="Search">⌕</button><button class="icon-btn" title="Notifications">♧<i></i></button><button class="primary-btn" id="new-invoice-btn">＋ New invoice</button></div></header>
+      <div class="page-body" id="app-content"></div>
+    </main>
+  </div>
+  <div class="modal-backdrop" id="modal-backdrop" hidden>
+    <section class="modal" style="width:min(760px,100%);max-height:92vh;overflow:auto" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <button class="modal-close" id="modal-close">×</button>
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;border-bottom:2px solid #08614d;padding-bottom:18px;margin-bottom:20px"><div style="display:flex;align-items:center;gap:10px"><span id="invoice-company-initials" style="width:38px;height:38px;border:3px solid #08614d;border-radius:50%;display:grid;place-items:center;color:#b38a35;font-weight:700">AV</span><div><b id="invoice-company-name" style="font-family:Georgia,serif;font-size:16px">AV COMPANY INC</b><small style="display:block;color:#78817e;margin-top:3px">Create billing document</small></div></div><h2 id="modal-title" style="font-family:Georgia,serif;color:#08614d;letter-spacing:2px;margin:0;font-size:30px">INVOICE</h2></div>
+      <form id="invoice-form">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;border:1px solid #21745f;border-radius:10px;padding:18px;margin-bottom:18px"><label>Customer<select id="customer-select"><option>Walk-in customer</option><option>Harper &amp; Co.</option><option>Northline Studio</option><option>Meadow Pharmacy</option></select></label>
+        <label>Invoice number<input id="invoice-number" readonly /></label>
+        </div>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin:8px 0 10px"><b>Products</b><button class="date-chip" id="add-invoice-item" type="button">＋ Add product</button></div>
+        <div class="invoice-items" id="invoice-items"></div>
+        <label>Payment method<select id="payment-method"><option>Cash</option><option>Credit</option><option>Online</option></select></label>
+        <input id="vat-select" type="hidden" value="0.15" />
+        <div class="invoice-preview" style="background:#08614d;color:white;border-radius:12px;padding:18px 20px"><div><span>Subtotal</span><br><span>VAT (15%)</span><br><b>Total amount</b></div><div class="right"><span id="modal-subtotal">SAR 0.00</span><br><span id="modal-vat">SAR 0.00</span><br><strong id="modal-total">SAR 0.00</strong></div></div>
+        <button class="primary-btn full" type="submit">Create bill <span>→</span></button>
+      </form>
+    </section>
+  </div>
+  <div class="modal-backdrop" id="inventory-modal-backdrop" hidden>
+    <section class="modal" role="dialog" aria-modal="true" aria-labelledby="inventory-modal-title">
+      <button class="modal-close" id="inventory-modal-close">×</button>
+      <div class="modal-kicker">Stock control</div><h2 id="inventory-modal-title">Add new item</h2><p class="modal-copy">Add a new product to your inventory.</p>
+      <form id="inventory-form">
+        <div class="form-grid"><label id="inventory-name-wrap">Product name<input id="inventory-name" required placeholder="e.g. Ceramic vase" /></label><label>Brand<input id="inventory-brand" placeholder="e.g. Atelier Home" /></label></div>
+        <div class="form-grid"><label id="inventory-category-wrap">Category<input id="inventory-category" required placeholder="e.g. Home goods" /></label><label>Stock number<input id="inventory-sku" required readonly /></label></div>
+        <div class="form-grid"><label>Quantity<input id="inventory-quantity" required type="number" min="1" value="1" /></label><label>Unit price<input id="inventory-price" required type="number" min="0" step="0.01" placeholder="0.00" /></label></div>
+        <button class="primary-btn full" id="inventory-submit" type="submit">Add item <span>→</span></button>
+      </form>
+    </section>
+  </div>
+  <div class="modal-backdrop" id="customer-modal-backdrop" hidden>
+    <section class="modal" role="dialog" aria-modal="true" aria-labelledby="customer-modal-title">
+      <button class="modal-close" id="customer-modal-close">×</button>
+      <div class="modal-kicker">Customer directory</div><h2 id="customer-modal-title">Add customer</h2><p class="modal-copy">Save customer contact, VAT, and address details for future invoices.</p>
+      <form id="customer-form">
+        <label>Customer name<input id="customer-name" required placeholder="e.g. Harper &amp; Co." /></label>
+        <div class="form-grid"><label>Mobile number<input id="customer-mobile" required type="tel" placeholder="e.g. 05XXXXXXXX" /></label><label>VAT number<input id="customer-vat" placeholder="e.g. 3XXXXXXXXXXXXX3" /></label></div>
+        <label>Address<textarea id="customer-address" required rows="3" placeholder="Street, city, country"></textarea></label>
+        <button class="primary-btn full" type="submit">Save customer <span>→</span></button>
+      </form>
+    </section>
+  </div>
+  <div class="modal-backdrop" id="company-modal-backdrop" hidden>
+    <section class="modal settings-modal" role="dialog" aria-modal="true" aria-labelledby="company-modal-title">
+      <button class="modal-close" id="company-modal-close">×</button>
+      <div class="modal-kicker">Workspace settings</div><h2 id="company-modal-title">Company profile</h2><p class="modal-copy">Update the business details used on your billing documents.</p>
+      <form id="company-form">
+        <details open style="border:1px solid #d9e4de;border-radius:8px;padding:12px 14px;margin-bottom:12px"><summary style="cursor:pointer;color:#08614d;font-weight:700">Company profile</summary><div style="display:grid;gap:14px;margin-top:16px"><div class="form-grid"><label>Company name<input id="company-name" required placeholder="e.g. Atelier Market" /></label><label>Logo initials<input id="company-initials" maxlength="3" placeholder="e.g. AM" /></label></div><div class="form-grid"><label>VAT number<input id="company-vat" placeholder="e.g. 3XXXXXXXXXXXXX3" /></label><label>Phone<input id="company-phone" type="tel" placeholder="e.g. 05XXXXXXXX" /></label></div><div class="form-grid"><label>Email<input id="company-email" type="email" placeholder="e.g. hello@company.com" /></label><label>City / country<input id="company-location" placeholder="e.g. Riyadh, Saudi Arabia" /></label></div><label>Business address<textarea id="company-address" rows="3" placeholder="Street, district, city"></textarea></label></div></details>
+        <details style="border:1px solid #d9e4de;border-radius:8px;padding:12px 14px;margin-bottom:16px"><summary style="cursor:pointer;color:#08614d;font-weight:700">Account access</summary><div class="form-grid" style="margin-top:16px"><label>Login username<input id="account-username" type="text" autocomplete="username" placeholder="e.g. admin" required /></label><label>Login password<input id="account-password" type="password" autocomplete="new-password" placeholder="Enter a new password" required /></label><button class="nav-item" id="logout-btn" type="button" style="color:#b14f43;border:1px solid #e2b8b0;justify-content:center">↪ Log out</button></div><div id="user-management" style="margin-top:18px;padding-top:16px;border-top:1px solid #d9e4de"><div class="modal-kicker">Users</div><div id="user-list" style="display:grid;gap:8px;margin:10px 0 14px"></div><div class="form-grid"><label>New username<input id="new-user-username" type="text" placeholder="e.g. cashier" /></label><label>New password<input id="new-user-password" type="password" placeholder="Enter a password" /></label></div><button class="date-chip" id="add-user-btn" type="button">＋ Add user</button><p id="user-message" class="modal-copy" hidden></p></div></details>
+        <button class="primary-btn full" type="submit">Save profile <span>→</span></button>
+      </form>
+    </section>
+  </div>
+  <script>if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js');</script>
+  <script src="app.js?v=84"></script>
+</body>
+</html>
