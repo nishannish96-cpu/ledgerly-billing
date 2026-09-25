@@ -34,7 +34,7 @@ try {
 	localStorage.removeItem(accountStorageKey);
 }
 const defaultCompany = { name: isNewAccount ? '' : 'AV COMPANY INC', initials: isNewAccount ? '' : 'AV', vat: '', phone: '', email: '', location: '', address: '' };
-let state = { view: 'overview', invoices: savedState?.invoices || [], products: savedState?.products || [], deliveryNotes: savedState?.deliveryNotes || [], customers: savedState?.customers || [], returns: savedState?.returns || [], inventoryHistory: savedState?.inventoryHistory || [], company: savedState?.company || defaultCompany, credentials: savedState?.credentials || { username: activeUsername, password: '' }, users: savedState?.users || [{ username: activeUsername, password: '', role: sessionStorage.getItem('ledgerly-role') || 'admin' }] };
+let state = { view: 'overview', quotations: savedState?.quotations || [], invoices: savedState?.invoices || [], products: savedState?.products || [], deliveryNotes: savedState?.deliveryNotes || [], customers: savedState?.customers || [], returns: savedState?.returns || [], inventoryHistory: savedState?.inventoryHistory || [], company: savedState?.company || defaultCompany, credentials: savedState?.credentials || { username: activeUsername, password: '' }, users: savedState?.users || [{ username: activeUsername, password: '', role: sessionStorage.getItem('ledgerly-role') || 'admin' }] };
 if (resetLocalData) state.company = { name: '', initials: '', vat: '', phone: '', email: '', location: '', address: '' };
 if (isNewAccount) sessionStorage.removeItem('ledgerly-new-account');
 
@@ -52,7 +52,44 @@ if (state.users.some(user => user.username.toLowerCase() === 'nishan')) {
 	saveState();
 }
 const activities = [];
-function saveState() { normalizeDateTimes(); localStorage.setItem(accountStorageKey, JSON.stringify({ invoices: state.invoices, products: state.products, deliveryNotes: state.deliveryNotes, customers: state.customers, returns: state.returns, inventoryHistory: state.inventoryHistory, company: state.company, credentials: state.credentials, users: state.users })); }
+function initializeTheme() {
+	const topActions = document.querySelector('.top-actions');
+	if (!topActions || document.getElementById('theme-toggle')) return;
+	const toggle = document.createElement('button');
+	toggle.id = 'theme-toggle';
+	toggle.className = 'icon-btn';
+	toggle.type = 'button';
+	toggle.addEventListener('click', () => applyTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'));
+	topActions.insertBefore(toggle, topActions.firstChild);
+	applyTheme(localStorage.getItem('ledgerly-theme') || 'light');
+	applyAccent(localStorage.getItem('ledgerly-accent') || 'forest');
+}
+function applyTheme(theme) {
+	document.documentElement.dataset.theme = theme;
+	localStorage.setItem('ledgerly-theme', theme);
+	const toggle = document.getElementById('theme-toggle');
+	if (toggle) {
+		toggle.textContent = theme === 'dark' ? '☀' : '☾';
+		toggle.title = theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode';
+		toggle.setAttribute('aria-label', toggle.title);
+	}
+}
+function applyAccent(accent) {
+	document.documentElement.dataset.accent = accent;
+	localStorage.setItem('ledgerly-accent', accent);
+	syncThemeSettings();
+}
+function syncThemeSettings() {
+	const section = document.getElementById('theme-settings');
+	if (!section) return;
+	const isAdmin = sessionStorage.getItem('ledgerly-role') === 'admin' || sessionStorage.getItem('ledgerly-user') === state.credentials.username;
+	section.hidden = false;
+	section.querySelectorAll('.theme-swatch').forEach(swatch => {
+		swatch.disabled = !isAdmin;
+		swatch.classList.toggle('is-selected', swatch.dataset.themeAccent === (document.documentElement.dataset.accent || 'forest'));
+	});
+}
+function saveState() { normalizeDateTimes(); localStorage.setItem(accountStorageKey, JSON.stringify({ quotations: state.quotations, invoices: state.invoices, products: state.products, deliveryNotes: state.deliveryNotes, customers: state.customers, returns: state.returns, inventoryHistory: state.inventoryHistory, company: state.company, credentials: state.credentials, users: state.users })); }
 function migrateReturnVat() {
 	let changed = false;
 	state.returns.forEach(returned => {
@@ -163,9 +200,19 @@ function renderReturns() {
 	return `<div class="page-heading"><div><div class="eyebrow">Sales returns</div><h1>Returns</h1><p>Choose invoice items and adjust the returned quantity before recording a return.</p></div></div>${invoiceSections || '<section class="panel"><div class="empty-state"><h3>No invoices available</h3><p>Create an invoice before recording a sales return.</p></div></section>'}<section class="panel" style="margin-top:24px"><div class="panel-header"><h2>Return history (${state.returns.length})</h2></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Return</th><th>Invoice</th><th>Customer</th><th>Date</th><th>Net return</th><th>VAT (15%)</th><th>Refund total</th><th></th></tr></thead><tbody>${historyRows}</tbody></table></div></section>`;
 }
 
-function renderGeneric(view) { const config = { delivery: ['Delivery notes', 'Dispatch orders with proof of handover.', '＋ New delivery note'], returns: ['Returns & stock returns', 'Track customer returns and put good stock back where it belongs.', '＋ Record return'], customers: ['Customers', 'Your customer directory and account balances live here.', '＋ Add customer'], reports: ['Reports', 'Sales, VAT, stock movement, and return reporting.', 'Export report'] }[view]; const search = view === 'returns' ? '<input class="filter-input" id="returns-filter" placeholder="⌕ Search returns" />' : ''; return `<div class="page-heading"><div><div class="eyebrow">Operations</div><h1>${config[0]}</h1><p>${config[1]}</p></div><button class="primary-btn">${config[2]}</button></div><section class="panel"><div class="panel-header"><h2>${view === 'returns' ? 'Returns' : 'Workspace'}</h2>${search}</div><div class="empty-state" data-returns-content><div class="stat-icon bg-mint" style="position:static;margin:0 auto 16px;font-size:22px">${view === 'returns' ? '↩' : view === 'delivery' ? '⌁' : '◈'}</div><h3>${view === 'returns' ? 'Returns are under control' : 'Your workspace is ready'}</h3><p>Use the action above to add your first record. This module is connected to the same inventory and VAT workflow.</p></div></section>`; }
+function renderReports() {
+	const totalSales = state.invoices.reduce((sum, invoice) => sum + (Number(invoice.total) || 0), 0);
+	const stockIntake = state.inventoryHistory.filter(entry => entry.change > 0).reduce((sum, entry) => sum + entry.change, 0);
+	const stockOuttake = Math.abs(state.inventoryHistory.filter(entry => entry.change < 0).reduce((sum, entry) => sum + entry.change, 0));
+	const totalReturns = state.returns.reduce((sum, returned) => sum + (Number(returned.refundTotal) || returnNetTotal(returned) * 1.15), 0);
+	const movementRows = state.inventoryHistory.map(entry => `<tr><td>${entry.date}</td><td><b>${entry.product}</b></td><td style="color:${entry.change >= 0 ? 'var(--green)' : '#b14f43'};font-weight:700">${entry.change >= 0 ? 'Intake +' : 'Outtake '}${Math.abs(entry.change)}</td><td>${entry.reason}</td><td>${entry.reference || '—'}</td></tr>`).join('');
+	return `<div class="page-heading"><div><div class="eyebrow">Business intelligence</div><h1>Reports</h1><p>Track sales, stock movement, and customer returns.</p></div></div><section class="stats-grid report-stats"><article class="stat-card"><span class="stat-label">1. Total sales</span><strong class="stat-value">${money(totalSales)}</strong><span class="stat-note">${state.invoices.length} invoices</span></article><article class="stat-card"><span class="stat-label">2. Stock intake</span><strong class="stat-value">${stockIntake}</strong><span class="stat-note">Units received</span></article><article class="stat-card"><span class="stat-label">2. Stock outtake</span><strong class="stat-value">${stockOuttake}</strong><span class="stat-note">Units sold or removed</span></article><article class="stat-card"><span class="stat-label">3. Total return</span><strong class="stat-value">${money(totalReturns)}</strong><span class="stat-note">${state.returns.length} return records</span></article></section><section class="panel report-movement"><div class="panel-header"><h2>Stock intake and outtake</h2></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Date</th><th>Item</th><th>Movement</th><th>Reason</th><th>Reference</th></tr></thead><tbody>${movementRows || '<tr><td colspan="5">No stock movement recorded yet.</td></tr>'}</tbody></table></div></section>`;
+}
+
+function renderGeneric(view) { const config = { quotations: ['Quotations', 'Prepare and track customer quotations before invoicing.', '＋ New quotation'], delivery: ['Delivery notes', 'Dispatch orders with proof of handover.', '＋ New delivery note'], returns: ['Returns & stock returns', 'Track customer returns and put good stock back where it belongs.', '＋ Record return'], customers: ['Customers', 'Your customer directory and account balances live here.', '＋ Add customer'], reports: ['Reports', 'Sales, VAT, stock movement, and return reporting.', 'Export report'] }[view]; const search = view === 'returns' ? '<input class="filter-input" id="returns-filter" placeholder="⌕ Search returns" />' : ''; return `<div class="page-heading"><div><div class="eyebrow">Operations</div><h1>${config[0]}</h1><p>${config[1]}</p></div><button class="primary-btn">${config[2]}</button></div><section class="panel"><div class="panel-header"><h2>${view === 'returns' ? 'Returns' : view === 'quotations' ? 'Quotations' : 'Workspace'}</h2>${search}</div><div class="empty-state" data-returns-content><div class="stat-icon bg-mint" style="position:static;margin:0 auto 16px;font-size:22px">${view === 'returns' ? '↩' : view === 'delivery' ? '⌁' : '◈'}</div><h3>${view === 'returns' ? 'Returns are under control' : view === 'quotations' ? 'Your quotations are ready' : 'Your workspace is ready'}</h3><p>Use the action above to add your first record. This module is connected to the same inventory and VAT workflow.</p></div></section>`; }
 function resetDashboardMetrics() { const values = document.querySelectorAll('.stat-value'); const { netSales, outstanding, totalStock, returnedUnits, paidCount, pendingCount } = getOverviewStats(); const metricValues = [money(netSales), money(outstanding), String(totalStock), String(returnedUnits)]; metricValues.forEach((value, index) => { if (values[index]) values[index].textContent = value; }); const notes = document.querySelectorAll('.stat-note'); notes[0].textContent = `${paidCount} paid invoices`; notes[1].textContent = `${pendingCount} pending invoices`; notes[2].textContent = 'Updated live'; notes[3].textContent = `${state.returns.length} return records`; notes[1].classList.add('down'); }
 function resetDashboardMetrics() {
+	if (state.view !== 'overview') return;
 	const values = document.querySelectorAll('.stat-value');
 	const notes = document.querySelectorAll('.stat-note');
 	if (values.length < 4 || notes.length < 4) return;
@@ -177,7 +224,12 @@ function resetDashboardMetrics() {
 	notes[3].textContent = `${state.returns.length} return records`;
 }
 
-function render() { const title = { overview:'Overview', invoices:'Invoices', inventory:'Inventory', delivery:'Delivery notes', returns:'Returns', customers:'Customers', reports:'Reports' }[state.view]; document.getElementById('page-title').textContent = title; document.getElementById('app-content').innerHTML = state.view === 'overview' ? renderOverview() : state.view === 'invoices' ? renderInvoices() : state.view === 'inventory' ? renderInventory() + renderInventoryHistory() : state.view === 'delivery' ? renderDeliveryNotes() : state.view === 'returns' ? renderReturns() : state.view === 'customers' ? renderCustomers() : renderGeneric(state.view); resetDashboardMetrics(); bindViewActions(); }
+function renderQuotations() {
+	const rows = state.quotations.map(quotation => `<tr><td><b>${quotation.no}</b></td><td>${quotation.customer}</td><td>${quotation.date}</td><td>${quotation.validUntil || '—'}</td><td><span class="status pending">${quotation.status}</span></td><td>${quotation.status === 'Converted' ? 'Invoiced' : `<button class="date-chip convert-quotation" type="button" data-quotation="${quotation.no}">Convert to invoice</button>`}</td></tr>`).join('') || '<tr><td colspan="6">No quotations created yet.</td></tr>';
+	return `<div class="page-heading"><div><div class="eyebrow">Sales preparation</div><h1>Quotations</h1><p>Prepare and track customer quotations before invoicing.</p></div><button class="primary-btn" id="new-quotation-btn">＋ New quotation</button></div><section class="panel"><div class="panel-header"><h2>Quotation history (${state.quotations.length})</h2></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Quotation</th><th>Customer</th><th>Date</th><th>Valid until</th><th>Status</th><th></th></tr></thead><tbody>${rows}</tbody></table></div></section>`;
+}
+
+function render() { const title = { overview:'Overview', quotations:'Quotations', invoices:'Invoices', inventory:'Inventory', delivery:'Delivery notes', returns:'Returns', customers:'Customers', reports:'Reports' }[state.view]; document.getElementById('page-title').textContent = title; document.getElementById('app-content').innerHTML = state.view === 'overview' ? renderOverview() : state.view === 'quotations' ? renderQuotations() : state.view === 'invoices' ? renderInvoices() : state.view === 'inventory' ? renderInventory() + renderInventoryHistory() : state.view === 'delivery' ? renderDeliveryNotes() : state.view === 'returns' ? renderReturns() : state.view === 'customers' ? renderCustomers() : state.view === 'reports' ? renderReports() : renderGeneric(state.view); resetDashboardMetrics(); bindViewActions(); }
 function bindViewActions() { document.querySelectorAll('[data-view-link]').forEach(el => el.addEventListener('click', () => { state.view = el.dataset.viewLink; document.querySelectorAll('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.view === state.view)); render(); })); document.querySelectorAll('.nav-item[data-view]').forEach(el => el.addEventListener('click', () => { state.view = el.dataset.view; document.querySelectorAll('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.view === state.view)); render(); })); document.getElementById('new-invoice-btn').onclick = openModal; document.getElementById('invoice-filter')?.addEventListener('input', event => { const q = event.target.value.toLowerCase(); document.querySelector('#invoice-table tbody').innerHTML = state.invoices.filter(i => `${i.no} ${i.customer}`.toLowerCase().includes(q)).map(inv => `<tr><td><b>${inv.no}</b></td><td><span class="item-name">${inv.customer}</span><span class="item-sub">${inv.date}</span></td><td><span class="status ${statusClass(inv.status)}">${inv.status}</span></td><td>${money(inv.total)} <button class="pdf-invoice" data-invoice="${inv.no}" title="Print or save as PDF" style="color:#08614d;border:1px solid #08614d;border-radius:5px;padding:4px 7px;margin-left:8px;font-size:11px;font-weight:700">PDF</button></td></tr>`).join(''); }); document.getElementById('inventory-filter')?.addEventListener('input', event => { const q = event.target.value.toLowerCase(); document.querySelectorAll('[data-inventory-search]').forEach(item => { item.hidden = !item.dataset.inventorySearch.includes(q); }); }); document.getElementById('returns-filter')?.addEventListener('input', event => { const content = document.querySelector('[data-returns-content]'); if (content) content.hidden = Boolean(event.target.value.trim()); }); }
 function invoiceItemMarkup() { const firstProduct = state.products[0]; return `<div class="invoice-item" style="display:grid;grid-template-columns:minmax(0,2fr) .7fr 1fr auto;gap:12px;align-items:end;border-bottom:1px solid #e7ebe7;padding-bottom:10px;margin-bottom:10px"><label>Product<select class="invoice-product">${state.products.map(p => `<option value="${p.id}">${p.name}</option>`).join('')}</select></label><label>Qty<input class="invoice-quantity" type="number" min="1" value="1" /></label><div><small style="display:block;color:#78817e;margin-bottom:7px">Amount</small><b class="invoice-line-amount">${money(firstProduct.price)}</b></div><button type="button" class="remove-invoice-item" title="Remove item" style="color:#b14f43;border:1px solid #e2b8b0;border-radius:5px;padding:7px 9px">×</button></div>`; }
 function bindInvoiceItems() { document.querySelectorAll('.invoice-product,.invoice-quantity').forEach(input => input.addEventListener('input', updateModalTotal)); }
@@ -429,6 +481,7 @@ function openCompanyProfile(showCompany = false) {
 	summaryUser.hidden = true;
 	accountFields.hidden = false;
 	userManagement.hidden = !(showCompany && isAdmin);
+	syncThemeSettings();
 	document.getElementById('company-modal-backdrop').hidden = false;
 }
 
@@ -442,6 +495,11 @@ function renderUserList() {
 }
 
 document.getElementById('settings-btn').addEventListener('click', openCompanyProfile);
+document.getElementById('theme-settings')?.addEventListener('click', event => {
+	const swatch = event.target.closest('.theme-swatch');
+	const isAdmin = sessionStorage.getItem('ledgerly-role') === 'admin' || sessionStorage.getItem('ledgerly-user') === state.credentials.username;
+	if (swatch && isAdmin) applyAccent(swatch.dataset.themeAccent);
+});
 document.getElementById('workspace-profile')?.addEventListener('click', () => {
 	openCompanyProfile(true);
 });
@@ -517,16 +575,143 @@ function printInvoice(invoiceNumber) {
 	if (!popup) return;
 	const company = state.company || {};
 	const companyName = company.name || 'AV COMPANY INC';
+	const accent = getComputedStyle(document.documentElement).getPropertyValue('--green').trim() || '#277252';
 	const items = invoice.items?.length ? invoice.items : [{ product: invoice.product || 'Product', quantity: invoice.quantity || 1, price: invoice.total / 1.15 / (invoice.quantity || 1) }];
 	const rows = items.map(item => `<tr><td><b>${item.product}</b></td><td>${item.quantity}</td><td>${money(item.price)}</td><td class="right"><b>${money(item.price * item.quantity)}</b></td></tr>`).join('');
 	const subtotal = invoice.total / 1.15;
 	const vat = invoice.total - subtotal;
-	popup.document.write(`<html><head><title>${invoice.no}</title><style>@page{size:A4;margin:0}*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#17211f;padding:42px 46px;max-width:820px;margin:auto}header{display:flex;justify-content:space-between;border-bottom:2px solid #08614d;padding-bottom:18px;margin-bottom:24px}h1{color:#08614d;letter-spacing:2px}.meta{line-height:1.8;color:#53625e}table{width:100%;border-collapse:collapse;margin-top:24px;font-size:12px}th{background:#08614d;color:#d5af51;text-align:left;padding:12px}td{border-bottom:1px solid #dfe7df;padding:12px}.right{text-align:right}.totals{margin:20px 0 0 auto;width:270px;line-height:2}.totals strong{font-size:16px;color:#08614d}</style></head><body><header><div><h1>INVOICE</h1><div class="meta">Invoice: <b>${invoice.no}</b><br>Date: ${invoice.date}<br>Status: <b>${invoice.status}</b></div></div><div><h2>${companyName}</h2><div class="meta">Customer: <b>${invoice.customer}</b></div></div></header><table><thead><tr><th>Product</th><th>Quantity</th><th>Unit price</th><th class="right">Amount</th></tr></thead><tbody>${rows}</tbody></table><div class="totals"><div>Subtotal: <b>${money(subtotal)}</b></div><div>VAT: <b>${money(vat)}</b></div><div>Net total: <strong>${money(invoice.total)}</strong></div></div><p style="margin-top:48px">Thank you for your business.</p><script>window.print();<\/script></body></html>`);
+	popup.document.write(`<html><head><title>${invoice.no}</title><style>@page{size:A4;margin:0}*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#17211f;padding:42px 46px;max-width:820px;margin:auto}header{display:flex;justify-content:space-between;border-bottom:2px solid ${accent};padding-bottom:18px;margin-bottom:24px}h1{color:${accent};letter-spacing:2px}.meta{line-height:1.8;color:#53625e}table{width:100%;border-collapse:collapse;margin-top:24px;font-size:12px}th{background:${accent};color:white;text-align:left;padding:12px}td{border-bottom:1px solid #dfe7df;padding:12px}.right{text-align:right}.totals{margin:20px 0 0 auto;width:270px;line-height:2}.totals strong{font-size:16px;color:${accent}}</style></head><body><header><div><h1>INVOICE</h1><div class="meta">Invoice: <b>${invoice.no}</b><br>Date: ${invoice.date}<br>Status: <b>${invoice.status}</b></div></div><div><h2>${companyName}</h2><div class="meta">Customer: <b>${invoice.customer}</b></div></div></header><table><thead><tr><th>Product</th><th>Quantity</th><th>Unit price</th><th class="right">Amount</th></tr></thead><tbody>${rows}</tbody></table><div class="totals"><div>Subtotal: <b>${money(subtotal)}</b></div><div>VAT: <b>${money(vat)}</b></div><div>Net total: <strong>${money(invoice.total)}</strong></div></div><p style="margin-top:48px">Thank you for your business.</p><script>window.print();<\/script></body></html>`);
 	popup.document.close();
 }
 
 document.addEventListener('click', event => { if (event.target.closest('.record-return')) render(); });
 render();
+initializeTheme();
 syncOverviewGreeting();
 syncCompanyHeader();
 syncSettingsAccess();
+
+function bindReportFilters() {
+	const movementPanel = document.querySelector('.report-movement');
+	if (!movementPanel || movementPanel.querySelector('#report-stock-filter')) return;
+	const addExportButton = (panel, filename) => {
+		const button = document.createElement('button');
+		button.className = 'date-chip report-export';
+		button.type = 'button';
+		button.textContent = 'Export Excel';
+		button.addEventListener('click', () => {
+			const headers = [...panel.querySelectorAll('thead th')].map(cell => cell.textContent.trim());
+			const rows = [...panel.querySelectorAll('tbody tr:not([hidden])')].filter(row => !row.querySelector('td[colspan]')).map(row => [...row.querySelectorAll('td')].map(cell => cell.textContent.trim()));
+			const csv = [headers, ...rows].map(row => row.map(value => `"${value.replaceAll('"', '""')}"`).join(',')).join('\r\n');
+			const link = document.createElement('a');
+			link.href = URL.createObjectURL(new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8' }));
+			link.download = `${filename}.csv`;
+			link.click();
+			URL.revokeObjectURL(link.href);
+		});
+		panel.querySelector('.panel-header').append(button);
+	};
+	const toolbar = document.createElement('div');
+	toolbar.className = 'section-toolbar';
+	toolbar.innerHTML = '<select class="filter-input" id="report-stock-filter" aria-label="Filter stock movement"><option value="all">All movement</option><option value="intake">Intake only</option><option value="outtake">Outtake only</option></select><input class="filter-input" id="report-stock-search" placeholder="⌕ Filter history" aria-label="Search stock history" />';
+	movementPanel.querySelector('.panel-header').append(toolbar);
+	const applyFilter = () => {
+		const movement = document.getElementById('report-stock-filter').value;
+		const query = document.getElementById('report-stock-search').value.trim().toLowerCase();
+		movementPanel.querySelectorAll('tbody tr').forEach(row => {
+			const text = row.textContent.toLowerCase();
+			const isEmpty = row.querySelector('td[colspan]');
+			const isIntake = text.includes('intake');
+			const matchesType = movement === 'all' || (movement === 'intake' && isIntake) || (movement === 'outtake' && !isIntake);
+			row.hidden = Boolean(!isEmpty && (!matchesType || !text.includes(query)));
+		});
+	};
+	document.getElementById('report-stock-filter').addEventListener('change', applyFilter);
+	document.getElementById('report-stock-search').addEventListener('input', applyFilter);
+	const salesRows = state.invoices.map(invoice => `<tr><td>${invoice.date}</td><td><b>${invoice.no}</b></td><td>${invoice.customer}</td><td>${invoice.status}</td><td>${money(invoice.total)}</td></tr>`).join('') || '<tr><td colspan="5">No sales recorded yet.</td></tr>';
+	const returnRows = state.returns.map(returned => `<tr><td>${returned.date}</td><td><b>${returned.no}</b></td><td>${returned.invoice}</td><td>${returned.customer}</td><td>${money(Number(returned.refundTotal) || returnNetTotal(returned) * 1.15)}</td></tr>`).join('') || '<tr><td colspan="5">No returns recorded yet.</td></tr>';
+	movementPanel.insertAdjacentHTML('beforebegin', `<section class="panel report-history" id="report-sales-history"><div class="panel-header"><h2>Total sales history</h2><input class="filter-input" id="report-sales-search" placeholder="⌕ Filter sales history" aria-label="Search sales history" /></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Date</th><th>Invoice</th><th>Customer</th><th>Status</th><th>Total</th></tr></thead><tbody>${salesRows}</tbody></table></div></section>`);
+	movementPanel.insertAdjacentHTML('afterend', `<section class="panel report-history" id="report-returns-history" style="margin-top:24px"><div class="panel-header"><h2>Total returns history</h2><input class="filter-input" id="report-returns-search" placeholder="⌕ Filter return history" aria-label="Search returns history" /></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Date</th><th>Return</th><th>Invoice</th><th>Customer</th><th>Total returned</th></tr></thead><tbody>${returnRows}</tbody></table></div></section>`);
+	addExportButton(document.getElementById('report-sales-history'), 'sales-history');
+	addExportButton(movementPanel, 'stock-movement-history');
+	addExportButton(document.getElementById('report-returns-history'), 'returns-history');
+	const bindHistorySearch = (inputId, tableId) => document.getElementById(inputId).addEventListener('input', event => {
+		const query = event.target.value.trim().toLowerCase();
+		document.querySelectorAll(`#${tableId} tbody tr`).forEach(row => { row.hidden = !row.querySelector('td[colspan]') && !row.textContent.toLowerCase().includes(query); });
+	});
+	bindHistorySearch('report-sales-search', 'report-sales-history');
+	bindHistorySearch('report-returns-search', 'report-returns-history');
+}
+
+function openQuotationModal() {
+	if (document.getElementById('quotation-modal-backdrop')) return;
+	const backdrop = document.createElement('div');
+	backdrop.className = 'modal-backdrop';
+	backdrop.id = 'quotation-modal-backdrop';
+	backdrop.innerHTML = `<section class="modal" role="dialog" aria-modal="true" aria-labelledby="quotation-modal-title"><button class="modal-close" type="button" aria-label="Close quotation">×</button><div class="modal-kicker">Sales preparation</div><h2 id="quotation-modal-title">New quotation</h2><p class="modal-copy">Prepare a quotation before creating an invoice.</p><form id="quotation-form"><label>Quotation number<input id="new-quotation-number" required value="QT-${String(state.quotations.length + 1).padStart(4, '0')}" /></label><label>Customer<select id="new-quotation-customer"><option>Walk-in customer</option>${state.customers.map(customer => `<option value="${customer.name}">${customer.name}${customer.mobile ? ` · ${customer.mobile}` : ''}</option>`).join('')}</select></label><div style="display:flex;align-items:center;justify-content:space-between;margin:8px 0 10px"><b>Items</b><button class="date-chip" id="add-quotation-item" type="button">＋ Add item</button></div><div id="quotation-items"></div><label>Valid until<input id="new-quotation-valid-until" type="date" /></label><label>Notes<textarea id="new-quotation-notes" rows="3" placeholder="Optional quotation notes"></textarea></label><button class="primary-btn full" type="submit">Save quotation <span>→</span></button></form></section>`;
+	document.body.append(backdrop);
+	const close = () => backdrop.remove();
+	backdrop.querySelector('.modal-close').addEventListener('click', close);
+	backdrop.addEventListener('click', event => { if (event.target === backdrop) close(); });
+	let quotationTotals = { subtotal: 0, vat: 0, total: 0 };
+	const renderQuotationItems = () => {
+		const items = document.getElementById('quotation-items');
+		items.innerHTML = state.products.length ? `<div class="quotation-item" style="display:grid;grid-template-columns:2fr .7fr 1fr auto;gap:10px;align-items:end;margin-bottom:10px"><label>Product<select class="quotation-product">${state.products.map(product => `<option value="${product.id}">${product.name}</option>`).join('')}</select></label><label>Qty<input class="quotation-quantity" type="number" min="1" value="1" /></label><label>Rate<input class="quotation-rate" type="number" min="0" step="0.01" value="${state.products[0].price || 0}" /></label><button class="modal-close remove-quotation-item" type="button" title="Remove item">×</button></div>` : '<p class="modal-copy">No inventory items available. Add stock before adding quotation items.</p>';
+	};
+	const summary = document.createElement('div');
+	summary.className = 'invoice-preview';
+	summary.innerHTML = '<div><span>Subtotal</span><br><span>VAT (15%)</span><br><b>Total amount</b></div><div class="right"><span id="quotation-subtotal">SAR 0.00</span><br><span id="quotation-vat">SAR 0.00</span><br><strong id="quotation-total">SAR 0.00</strong></div>';
+	backdrop.querySelector('#new-quotation-valid-until').closest('label').before(summary);
+	const updateQuotationTotal = () => {
+		const subtotal = [...backdrop.querySelectorAll('.quotation-item')].reduce((sum, row) => sum + ((Number(row.querySelector('.quotation-rate').value) || 0) * (Number(row.querySelector('.quotation-quantity').value) || 0)), 0);
+		quotationTotals = { subtotal, vat: subtotal * 0.15, total: subtotal * 1.15 };
+		document.getElementById('quotation-subtotal').textContent = money(quotationTotals.subtotal);
+		document.getElementById('quotation-vat').textContent = money(quotationTotals.vat);
+		document.getElementById('quotation-total').textContent = money(quotationTotals.total);
+	};
+	backdrop.querySelector('#add-quotation-item').addEventListener('click', () => { const items = document.getElementById('quotation-items'); if (!state.products.length) return; items.insertAdjacentHTML('beforeend', items.firstElementChild?.outerHTML || ''); updateQuotationTotal(); });
+	backdrop.addEventListener('click', event => { if (event.target.closest('.remove-quotation-item')) { const row = event.target.closest('.quotation-item'); if (document.querySelectorAll('.quotation-item').length > 1) row.remove(); } });
+	backdrop.addEventListener('input', event => { if (event.target.closest('.quotation-item')) updateQuotationTotal(); });
+	renderQuotationItems();
+	updateQuotationTotal();
+	backdrop.querySelector('#quotation-form').addEventListener('submit', event => {
+		event.preventDefault();
+		const items = [...backdrop.querySelectorAll('.quotation-item')].map(row => ({ product: row.querySelector('.quotation-product').value, quantity: Number(row.querySelector('.quotation-quantity').value) || 0, rate: Number(row.querySelector('.quotation-rate').value) || 0 })).filter(item => item.quantity > 0);
+		state.quotations.unshift({ no: document.getElementById('new-quotation-number').value.trim(), customer: document.getElementById('new-quotation-customer').value || 'Walk-in customer', date: formatSystemDateTime(), validUntil: document.getElementById('new-quotation-valid-until').value, notes: document.getElementById('new-quotation-notes').value.trim(), items, subtotal: quotationTotals.subtotal, vat: quotationTotals.vat, total: quotationTotals.total, status: 'Draft' });
+		saveState();
+		close();
+		render();
+	});
+	document.getElementById('new-quotation-number').focus();
+}
+
+function bindQuotationAction() {
+	const button = document.getElementById('new-quotation-btn');
+	if (button && button.dataset.bound !== 'true') {
+		button.dataset.bound = 'true';
+		button.addEventListener('click', openQuotationModal);
+	}
+	document.querySelectorAll('.convert-quotation').forEach(convertButton => {
+		if (convertButton.dataset.bound === 'true') return;
+		convertButton.dataset.bound = 'true';
+		convertButton.addEventListener('click', () => convertQuotation(convertButton.dataset.quotation));
+	});
+}
+
+function convertQuotation(quotationNumber) {
+	const quotation = state.quotations.find(item => item.no === quotationNumber);
+	if (!quotation || quotation.status === 'Converted') return;
+	if (!quotation.items?.length) { window.alert('Add quotation items before converting it to an invoice.'); return; }
+	const items = quotation.items.map(item => {
+		const product = state.products.find(stockItem => stockItem.id === item.product);
+		return { product: product?.name || item.product, quantity: item.quantity, price: item.rate || product?.price || 0 };
+	});
+	const subtotal = items.reduce((sum, item) => sum + item.price * item.quantity, 0);
+	quotation.status = 'Converted';
+	state.invoices.unshift({ no: nextInvoiceNumber(), quotation: quotation.no, customer: quotation.customer, paymentMethod: 'Credit', date: formatSystemDateTime(), total: subtotal * 1.15, status: 'Pending', items, vat: 0.15 });
+	saveState();
+	state.view = 'invoices';
+	render();
+}
+
+new MutationObserver(() => { bindReportFilters(); bindQuotationAction(); }).observe(document.getElementById('app-content'), { childList: true });

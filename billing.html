@@ -10,6 +10,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="dark-mode.css" />
   <style>
     .settings-modal { width: min(680px, 100%); max-height: calc(100vh - 32px); overflow-y: auto; overscroll-behavior: contain; }
     .settings-modal > h2 { margin-bottom: 8px; }
@@ -63,6 +64,7 @@
       <nav class="nav-group" aria-label="Primary navigation">
         <p class="nav-label">Workspace</p>
         <button class="nav-item active" data-view="overview"><span>◈</span> Overview</button>
+        <button class="nav-item" data-view="quotations"><span>▤</span> Quotations</button>
         <button class="nav-item" data-view="invoices"><span>▤</span> Invoices</button>
         <button class="nav-item" data-view="inventory"><span>▦</span> Inventory</button>
         <button class="nav-item" data-view="delivery"><span>⌁</span> Delivery notes</button>
@@ -130,11 +132,12 @@
       <form id="company-form">
         <details open style="border:1px solid #d9e4de;border-radius:8px;padding:12px 14px;margin-bottom:12px"><summary style="cursor:pointer;color:#08614d;font-weight:700">Company profile</summary><div style="display:grid;gap:14px;margin-top:16px"><div class="form-grid"><label>Company name<input id="company-name" required placeholder="e.g. Atelier Market" /></label><label>Logo initials<input id="company-initials" maxlength="3" placeholder="e.g. AM" /></label></div><div class="form-grid"><label>VAT number<input id="company-vat" placeholder="e.g. 3XXXXXXXXXXXXX3" /></label><label>Phone<input id="company-phone" type="tel" placeholder="e.g. 05XXXXXXXX" /></label></div><div class="form-grid"><label>Email<input id="company-email" type="email" placeholder="e.g. hello@company.com" /></label><label>City / country<input id="company-location" placeholder="e.g. Riyadh, Saudi Arabia" /></label></div><label>Business address<textarea id="company-address" rows="3" placeholder="Street, district, city"></textarea></label></div></details>
         <details style="border:1px solid #d9e4de;border-radius:8px;padding:12px 14px;margin-bottom:16px"><summary style="cursor:pointer;color:#08614d;font-weight:700">Account access</summary><div class="form-grid" style="margin-top:16px"><label>Login username<input id="account-username" type="text" autocomplete="username" placeholder="e.g. admin" required /></label><label>Login password<input id="account-password" type="password" autocomplete="new-password" placeholder="Enter a new password" required /></label><button class="nav-item" id="logout-btn" type="button" style="color:#b14f43;border:1px solid #e2b8b0;justify-content:center">↪ Log out</button></div><div id="user-management" style="margin-top:18px;padding-top:16px;border-top:1px solid #d9e4de"><div class="modal-kicker">Users</div><div id="user-list" style="display:grid;gap:8px;margin:10px 0 14px"></div><div class="form-grid"><label>New username<input id="new-user-username" type="text" placeholder="e.g. cashier" /></label><label>New password<input id="new-user-password" type="password" placeholder="Enter a password" /></label></div><button class="date-chip" id="add-user-btn" type="button">＋ Add user</button><p id="user-message" class="modal-copy" hidden></p></div></details>
+        <div id="theme-settings" class="theme-settings" hidden><div class="modal-kicker">Software theme</div><p class="modal-copy">Choose the workspace accent color.</p><div class="theme-swatches" role="group" aria-label="Theme color"><button type="button" class="theme-swatch" data-theme-accent="forest" aria-label="Forest theme" title="Forest"></button><button type="button" class="theme-swatch" data-theme-accent="ocean" aria-label="Ocean theme" title="Ocean"></button><button type="button" class="theme-swatch" data-theme-accent="berry" aria-label="Berry theme" title="Berry"></button><button type="button" class="theme-swatch" data-theme-accent="amber" aria-label="Amber theme" title="Amber"></button></div></div>
         <button class="primary-btn full" type="submit">Save profile <span>→</span></button>
       </form>
     </section>
   </div>
   <script>if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js');</script>
-  <script src="app.js?v=86"></script>
+  <script src="app.js?v=103"></script>
 </body>
 </html>
