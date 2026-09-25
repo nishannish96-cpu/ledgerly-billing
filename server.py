@@ -101,7 +101,7 @@ class LedgerlyHandler(SimpleHTTPRequestHandler):
                 if path == '/api/register':
                     if user:
                         return self.send_json(409, {'error': 'That username already exists.'})
-                    role = 'admin' if database.execute('SELECT COUNT(*) AS total FROM users').fetchone()['total'] == 0 else 'user'
+                    role = 'admin'
                     salt, digest = password_hash(password)
                     database.execute(
                         'INSERT INTO users (username, password_hash, password_salt, role) VALUES (?, ?, ?, ?)',
