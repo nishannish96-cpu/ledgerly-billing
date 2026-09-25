@@ -75,6 +75,13 @@ function migrateReturnVat() {
 }
 migrateReturnVat();
 function formatSystemDateTime(value = new Date()) { return new Intl.DateTimeFormat(undefined, { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(value); }
+function syncOverviewGreeting() {
+	const pageHeading = document.querySelector('.page-heading');
+	if (!pageHeading || state.view !== 'overview') return;
+	const displayName = activeUsername.split('@')[0].replace(/[._-]+/g, ' ').replace(/\b\w/g, character => character.toUpperCase());
+	pageHeading.querySelector('.eyebrow').textContent = formatSystemDateTime();
+	pageHeading.querySelector('h1').textContent = `Hi, ${displayName}`;
+}
 function recordInventoryChange(product, change, reason, reference = '') { state.inventoryHistory.unshift({ product: product.name, sku: product.id, change, reason, reference, date: formatSystemDateTime() }); }
 const money = value => `SAR ${value.toFixed(2)}`;
 const statusClass = status => status.toLowerCase();
@@ -520,5 +527,6 @@ function printInvoice(invoiceNumber) {
 
 document.addEventListener('click', event => { if (event.target.closest('.record-return')) render(); });
 render();
+syncOverviewGreeting();
 syncCompanyHeader();
 syncSettingsAccess();
