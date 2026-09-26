@@ -614,8 +614,6 @@ syncOverviewGreeting();
 syncCompanyHeader();
 syncSettingsAccess();
 loadRemoteState();
-setInterval(() => { if (!document.hidden && document.getElementById('modal-backdrop')?.hidden !== false) loadRemoteState(); }, 1000);
-document.addEventListener('visibilitychange', () => { if (!document.hidden) loadRemoteState(); });
 
 function bindReportFilters() {
 	const movementPanel = document.querySelector('.report-movement');
