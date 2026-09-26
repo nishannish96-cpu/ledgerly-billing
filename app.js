@@ -41,6 +41,7 @@ let state = { view: 'overview', quotations: savedState?.quotations || [], invoic
 let invoiceDraft = null;
 let remoteStateReady = false;
 let localStateDirty = false;
+let serverSyncQueue = Promise.resolve();
 if (resetLocalData) state.company = { name: '', initials: '', vat: '', phone: '', email: '', location: '', address: '' };
 if (isNewAccount) sessionStorage.removeItem('ledgerly-new-account');
 
@@ -97,11 +98,9 @@ function syncThemeSettings() {
 }
 function stateSnapshot() { return { quotations: state.quotations, invoices: state.invoices, products: state.products, deliveryNotes: state.deliveryNotes, customers: state.customers, returns: state.returns, inventoryHistory: state.inventoryHistory, company: state.company, credentials: state.credentials, users: state.users }; }
 function hasWorkspaceData(snapshot) { return ['quotations', 'invoices', 'products', 'deliveryNotes', 'customers', 'returns', 'inventoryHistory'].some(key => Array.isArray(snapshot?.[key]) && snapshot[key].length) || Boolean(snapshot?.company?.name); }
-async function syncStateToServer(snapshot) { const response = await fetch('/api/state', { method: 'POST', keepalive: true, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: activeUsername, state: snapshot }) }); if (!response.ok) throw new Error('Workspace sync failed.'); }
-function saveState() { normalizeDateTimes(); const snapshot = stateSnapshot(); localStorage.setItem(accountStorageKey, JSON.stringify(snapshot)); if (remoteStateReady) { localStateDirty = true; const payload = JSON.stringify({ username: activeUsername, state: snapshot }); navigator.sendBeacon('/api/state', new Blob([payload], { type: 'application/json' })); syncStateToServer(snapshot).then(() => { if (localStorage.getItem(accountStorageKey) === JSON.stringify(snapshot)) localStateDirty = false; }).catch(() => {}); } }
+function syncStateToServer(snapshot) { serverSyncQueue = serverSyncQueue.then(async () => { const response = await fetch('/api/state', { method: 'POST', keepalive: true, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: activeUsername, state: snapshot }) }); if (!response.ok) throw new Error('Workspace sync failed.'); }); return serverSyncQueue; }
+function saveState() { normalizeDateTimes(); const snapshot = stateSnapshot(); localStorage.setItem(accountStorageKey, JSON.stringify(snapshot)); if (remoteStateReady) { localStateDirty = true; syncStateToServer(snapshot).then(() => { if (localStorage.getItem(accountStorageKey) === JSON.stringify(snapshot)) localStateDirty = false; }).catch(() => {}); } }
 async function loadRemoteState() { try { const localSnapshot = stateSnapshot(); if (localStateDirty) { syncStateToServer(localSnapshot).catch(() => {}); return; } const response = await fetch(`/api/state?username=${encodeURIComponent(activeUsername)}`); const result = await response.json(); const remoteHasData = hasWorkspaceData(result.state); const localHasData = hasWorkspaceData(localSnapshot); if (response.ok && result.state && (remoteHasData || !localHasData) && JSON.stringify(result.state) !== JSON.stringify(localSnapshot)) { state = { ...state, ...result.state }; localStorage.setItem(accountStorageKey, JSON.stringify(stateSnapshot())); render(); syncCompanyHeader(); syncSettingsAccess(); } remoteStateReady = true; if (!result.state || (!remoteHasData && localHasData)) syncStateToServer(localSnapshot).catch(() => {}); } catch { remoteStateReady = true; } }
-function flushStateToServer() { if (!remoteStateReady) return; const payload = JSON.stringify({ username: activeUsername, state: stateSnapshot() }); navigator.sendBeacon('/api/state', new Blob([payload], { type: 'application/json' })); }
-window.addEventListener('pagehide', flushStateToServer);
 function migrateReturnVat() {
 	let changed = false;
 	state.returns.forEach(returned => {
