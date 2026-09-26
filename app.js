@@ -706,6 +706,7 @@ function openQuotationModal() {
 		const items = [...backdrop.querySelectorAll('.quotation-item')].map(row => ({ product: row.querySelector('.quotation-product').value, quantity: Number(row.querySelector('.quotation-quantity').value) || 0, rate: Number(row.querySelector('.quotation-rate').value) || 0 })).filter(item => item.quantity > 0);
 		state.quotations.unshift({ no: document.getElementById('new-quotation-number').value.trim(), customer: document.getElementById('new-quotation-customer').value || 'Walk-in customer', date: formatSystemDateTime(), validUntil: document.getElementById('new-quotation-valid-until').value, notes: document.getElementById('new-quotation-notes').value.trim(), items, subtotal: quotationTotals.subtotal, vat: quotationTotals.vat, total: quotationTotals.total, status: 'Draft' });
 		saveState();
+		syncStateToServer(stateSnapshot()).catch(() => {});
 		close();
 		render();
 	});
