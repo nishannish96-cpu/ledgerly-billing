@@ -1,5 +1,4 @@
 const activeUsername = (sessionStorage.getItem('ledgerly-user') || 'admin@ledgerly.local').trim().toLowerCase();
-const activeFirstName = (sessionStorage.getItem('ledgerly-first-name') || '').trim();
 const accountStorageKey = `ledgerly-state:${activeUsername}`;
 const isNewAccount = sessionStorage.getItem('ledgerly-new-account') === activeUsername;
 if (new URLSearchParams(window.location.search).has('clear-data')) {
@@ -124,7 +123,7 @@ function formatSystemDateTime(value = new Date()) { return new Intl.DateTimeForm
 function syncOverviewGreeting() {
 	const pageHeading = document.querySelector('.page-heading');
 	if (!pageHeading || state.view !== 'overview') return;
-	 const displayName = activeFirstName || activeUsername.split('@')[0].replace(/[._-]+/g, ' ').replace(/\b\w/g, character => character.toUpperCase());
+	const displayName = activeUsername.split('@')[0].replace(/[._-]+/g, ' ').replace(/\b\w/g, character => character.toUpperCase());
 	pageHeading.querySelector('.eyebrow').textContent = formatSystemDateTime();
 	pageHeading.querySelector('h1').textContent = `Hello, ${displayName}`;
 }
@@ -354,7 +353,7 @@ function syncSettingsAccess() {
 	const userName = document.getElementById('current-user-name');
 	const userRole = document.getElementById('current-user-role');
 	const userInitials = document.getElementById('current-user-initials');
-	if (userName) userName.textContent = sessionStorage.getItem('ledgerly-first-name') || currentUser;
+	if (userName) userName.textContent = currentUser;
 	if (userRole) userRole.textContent = currentRole;
 	if (userInitials) userInitials.textContent = currentUser.slice(0, 2).toUpperCase();
 }
