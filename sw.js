@@ -1,4 +1,4 @@
-const CACHE_NAME = 'ledgerly-shell-v43';
+const CACHE_NAME = 'ledgerly-shell-v44';
 const APP_SHELL = [
   './',
   './index.html',
@@ -26,11 +26,17 @@ self.addEventListener('activate', event => {
 
 self.addEventListener('fetch', event => {
   if (event.request.method !== 'GET') return;
+  const requestPath = new URL(event.request.url).pathname;
+  const liveAsset = requestPath.endsWith('.html') || requestPath.endsWith('.js');
   event.respondWith(
-    caches.match(event.request).then(cached => cached || fetch(event.request).then(response => {
+    (liveAsset ? fetch(event.request).then(response => {
       const copy = response.clone();
       caches.open(CACHE_NAME).then(cache => cache.put(event.request, copy));
       return response;
-    }).catch(() => caches.match('./index.html')))
+    }).catch(() => caches.match(event.request)) : caches.match(event.request).then(cached => cached || fetch(event.request).then(response => {
+      const copy = response.clone();
+      caches.open(CACHE_NAME).then(cache => cache.put(event.request, copy));
+      return response;
+    }))).catch(() => caches.match('./index.html'))
   );
 });
