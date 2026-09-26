@@ -698,6 +698,7 @@ function openQuotationModal() {
 	backdrop.querySelector('#add-quotation-item').addEventListener('click', () => { const items = document.getElementById('quotation-items'); if (!state.products.length) return; items.insertAdjacentHTML('beforeend', items.firstElementChild?.outerHTML || ''); updateQuotationTotal(); });
 	backdrop.addEventListener('click', event => { if (event.target.closest('.remove-quotation-item')) { const row = event.target.closest('.quotation-item'); if (document.querySelectorAll('.quotation-item').length > 1) row.remove(); } });
 	backdrop.addEventListener('input', event => { if (event.target.closest('.quotation-item')) updateQuotationTotal(); });
+	backdrop.addEventListener('change', event => { const productSelect = event.target.closest('.quotation-product'); if (!productSelect) return; const product = state.products.find(item => item.id === productSelect.value); const row = productSelect.closest('.quotation-item'); if (product && row) row.querySelector('.quotation-rate').value = product.price || 0; updateQuotationTotal(); });
 	renderQuotationItems();
 	updateQuotationTotal();
 	backdrop.querySelector('#quotation-form').addEventListener('submit', event => {
