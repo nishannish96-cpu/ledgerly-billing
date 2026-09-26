@@ -7,7 +7,7 @@ const APP_SHELL = [
   './styles.css',
   './login.css',
   './dark-mode.css',
-  './app.js?v=110',
+  './app.js?v=111',
   './manifest.json',
   './icon.svg'
 ];
