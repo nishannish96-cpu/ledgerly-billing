@@ -2,12 +2,6 @@ const activeUsername = (sessionStorage.getItem('ledgerly-user') || 'admin@ledger
 const activeFirstName = (sessionStorage.getItem('ledgerly-first-name') || '').trim();
 const accountStorageKey = `ledgerly-state:${activeUsername}`;
 const isNewAccount = sessionStorage.getItem('ledgerly-new-account') === activeUsername;
-const browserDataReset = localStorage.getItem('ledgerly-data-reset-v2') !== '1';
-if (browserDataReset) {
-	localStorage.clear();
-	localStorage.setItem('ledgerly-data-reset-v2', '1');
-}
-
 if (new URLSearchParams(window.location.search).has('clear-data')) {
 	localStorage.removeItem(accountStorageKey);
 	localStorage.removeItem('ledgerly-state');
