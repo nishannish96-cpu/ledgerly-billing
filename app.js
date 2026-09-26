@@ -96,8 +96,9 @@ function syncThemeSettings() {
 }
 function stateSnapshot() { return { quotations: state.quotations, invoices: state.invoices, products: state.products, deliveryNotes: state.deliveryNotes, customers: state.customers, returns: state.returns, inventoryHistory: state.inventoryHistory, company: state.company, credentials: state.credentials, users: state.users }; }
 function hasWorkspaceData(snapshot) { return ['quotations', 'invoices', 'products', 'deliveryNotes', 'customers', 'returns', 'inventoryHistory'].some(key => Array.isArray(snapshot?.[key]) && snapshot[key].length) || Boolean(snapshot?.company?.name); }
-function saveState() { normalizeDateTimes(); const snapshot = stateSnapshot(); localStorage.setItem(accountStorageKey, JSON.stringify(snapshot)); if (remoteStateReady) fetch('/api/state', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: activeUsername, state: snapshot }) }).catch(() => {}); }
-async function loadRemoteState() { try { const response = await fetch(`/api/state?username=${encodeURIComponent(activeUsername)}`); const result = await response.json(); const localSnapshot = stateSnapshot(); if (response.ok && result.state && (hasWorkspaceData(result.state) || !hasWorkspaceData(localSnapshot))) { state = { ...state, ...result.state }; localStorage.setItem(accountStorageKey, JSON.stringify(stateSnapshot())); render(); syncCompanyHeader(); syncSettingsAccess(); } remoteStateReady = true; if (!result.state || (!hasWorkspaceData(result.state) && hasWorkspaceData(localSnapshot))) saveState(); } catch { remoteStateReady = true; } }
+function syncStateToServer(snapshot) { return fetch('/api/state', { method: 'POST', keepalive: true, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: activeUsername, state: snapshot }) }).catch(() => {}); }
+function saveState() { normalizeDateTimes(); const snapshot = stateSnapshot(); localStorage.setItem(accountStorageKey, JSON.stringify(snapshot)); if (remoteStateReady) syncStateToServer(snapshot); }
+async function loadRemoteState() { try { const response = await fetch(`/api/state?username=${encodeURIComponent(activeUsername)}`); const result = await response.json(); const localSnapshot = stateSnapshot(); const remoteHasData = hasWorkspaceData(result.state); const localHasData = hasWorkspaceData(localSnapshot); if (response.ok && result.state && (remoteHasData || !localHasData) && JSON.stringify(result.state) !== JSON.stringify(localSnapshot)) { state = { ...state, ...result.state }; localStorage.setItem(accountStorageKey, JSON.stringify(stateSnapshot())); render(); syncCompanyHeader(); syncSettingsAccess(); } remoteStateReady = true; if (!result.state || (!remoteHasData && localHasData)) syncStateToServer(localSnapshot); } catch { remoteStateReady = true; } }
 function migrateReturnVat() {
 	let changed = false;
 	state.returns.forEach(returned => {
@@ -609,6 +610,7 @@ syncOverviewGreeting();
 syncCompanyHeader();
 syncSettingsAccess();
 loadRemoteState();
+setInterval(() => { if (!document.hidden && document.getElementById('modal-backdrop')?.hidden !== false) loadRemoteState(); }, 10000);
 
 function bindReportFilters() {
 	const movementPanel = document.querySelector('.report-movement');
