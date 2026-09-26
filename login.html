@@ -40,16 +40,14 @@
         <h2>Sign in to Ledgerly</h2>
         <p class="login-copy">Use your workspace credentials to continue.</p>
         <form id="login-form">
-          <label>Email address<input id="login-email" type="email" autocomplete="username" placeholder="Enter your email address" required /></label>
+          <label>Username<input id="login-email" type="text" autocomplete="username" placeholder="Enter your username" required /></label>
           <label>Password<div class="password-field"><input id="login-password" type="password" autocomplete="current-password" placeholder="Enter your password" required /><button class="password-toggle" type="button" data-password-target="login-password" aria-label="Show password">◉</button></div></label>
           <div class="form-row"><label class="remember"><input id="remember-me" type="checkbox" checked /> <span>Remember me</span></label><a href="#" id="forgot-link">Forgot password?</a></div>
           <button class="login-button" type="submit">Sign in <span aria-hidden="true">→</span></button>
           <p class="login-error" id="login-error" role="alert" hidden>Enter the demo credentials to continue.</p>
         </form>
         <form id="create-form" hidden>
-          <label>First name<input id="create-first-name" type="text" autocomplete="given-name" placeholder="Enter your first name" required /></label>
-          <label>Last name<input id="create-last-name" type="text" autocomplete="family-name" placeholder="Enter your last name" required /></label>
-          <label>Email address (this is your username)<input id="create-username" type="email" autocomplete="email" placeholder="you@example.com" required /></label>
+          <label>Username<input id="create-username" type="text" autocomplete="username" placeholder="Choose a username" required /></label>
           <label>Password<div class="password-field"><input id="create-password" type="password" autocomplete="new-password" placeholder="Create a password" minlength="6" required /><button class="password-toggle" type="button" data-password-target="create-password" aria-label="Show password">◉</button></div></label>
           <label>Confirm password<div class="password-field"><input id="create-password-confirm" type="password" autocomplete="new-password" placeholder="Repeat your password" required /><button class="password-toggle" type="button" data-password-target="create-password-confirm" aria-label="Show password">◉</button></div></label>
           <button class="login-button" id="create-submit" type="submit">Create account <span aria-hidden="true">→</span></button>
@@ -99,7 +97,7 @@
       createSuccess.hidden = true;
       switchCopy.textContent = showCreate ? 'Already have an account?' : 'Need an account?';
       createAccountLink.textContent = showCreate ? 'Sign in' : 'Create one';
-      if (showCreate) document.getElementById('create-first-name').focus();
+      if (showCreate) document.getElementById('create-username').focus();
       else document.getElementById('login-email').focus();
     }
 
@@ -141,7 +139,7 @@
         return;
       }
       try {
-        await requestAccount('/api/register', username, password, { first_name: document.getElementById('create-first-name').value.trim(), last_name: document.getElementById('create-last-name').value.trim() });
+        await requestAccount('/api/register', username, password);
         localStorage.removeItem(`ledgerly-state:${username}`);
         sessionStorage.setItem('ledgerly-new-account', username);
         createForm.reset();

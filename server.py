@@ -174,10 +174,6 @@ class LedgerlyHandler(SimpleHTTPRequestHandler):
                 if path == '/api/register':
                     if user:
                         return self.send_json(409, {'error': 'That email is already registered.'})
-                    if '@' not in username or '.' not in username.rsplit('@', 1)[-1]:
-                        return self.send_json(400, {'error': 'Use a valid email address as the username.'})
-                    if not first_name or not last_name:
-                        return self.send_json(400, {'error': 'First name and last name are required.'})
                     salt, digest = password_hash(password)
                     database.execute('INSERT INTO users (username, password_hash, password_salt, first_name, last_name, role) VALUES (?, ?, ?, ?, ?, ?)', (username, digest, salt, first_name, last_name, 'admin'))
                     user = database.execute('SELECT * FROM users WHERE username = ?', (username,)).fetchone()
