@@ -109,7 +109,7 @@
       <form id="inventory-form">
         <div class="form-grid"><label id="inventory-name-wrap">Product name<input id="inventory-name" required placeholder="e.g. Ceramic vase" /></label><label>Brand<input id="inventory-brand" placeholder="e.g. Atelier Home" /></label></div>
         <div class="form-grid"><label id="inventory-category-wrap">Category<input id="inventory-category" required placeholder="e.g. Home goods" /></label><label>Stock number<input id="inventory-sku" required readonly /></label></div>
-        <div class="form-grid"><label>Quantity<input id="inventory-quantity" required type="number" min="1" value="1" /></label><label>Unit price<input id="inventory-price" required type="number" min="0" step="0.01" placeholder="0.00" /></label></div>
+        <div class="form-grid"><label>Quantity<input id="inventory-quantity" required type="number" min="1" value="1" /></label><label>Unit price<input id="inventory-price" required type="number" inputmode="decimal" min="0" step="0.01" value="0.00" placeholder="0.00" /></label></div>
         <button class="primary-btn full" id="inventory-submit" type="submit">Add item <span>→</span></button>
       </form>
     </section>
@@ -139,6 +139,6 @@
     </section>
   </div>
   <script>if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js');</script>
-  <script src="app.js?v=115"></script>
+  <script src="app.js?v=116"></script>
 </body>
 </html>
