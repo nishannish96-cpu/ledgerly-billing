@@ -12,6 +12,17 @@
   <link rel="stylesheet" href="login.css?v=2" />
 </head>
 <body>
+  <script>
+    const loginParams = new URLSearchParams(window.location.search);
+    if (loginParams.has('clear-local-data')) {
+      localStorage.clear();
+      sessionStorage.clear();
+      window.history.replaceState({}, document.title, window.location.pathname);
+    } else if (loginParams.has('logout-all')) {
+      sessionStorage.clear();
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }
+  </script>
   <main class="login-shell">
     <section class="login-intro">
       <div class="brand"><span class="brand-mark">L</span><span>ledgerly</span></div>
@@ -36,10 +47,12 @@
           <p class="login-error" id="login-error" role="alert" hidden>Enter the demo credentials to continue.</p>
         </form>
         <form id="create-form" hidden>
-          <label>Username<input id="create-username" type="text" autocomplete="username" placeholder="Choose a username" required /></label>
+          <label>First name<input id="create-first-name" type="text" autocomplete="given-name" placeholder="Enter your first name" required /></label>
+          <label>Last name<input id="create-last-name" type="text" autocomplete="family-name" placeholder="Enter your last name" required /></label>
+          <label>Email address<input id="create-username" type="email" autocomplete="email" placeholder="you@example.com" required /></label>
           <label>Password<div class="password-field"><input id="create-password" type="password" autocomplete="new-password" placeholder="Create a password" minlength="6" required /><button class="password-toggle" type="button" data-password-target="create-password" aria-label="Show password">◉</button></div></label>
           <label>Confirm password<div class="password-field"><input id="create-password-confirm" type="password" autocomplete="new-password" placeholder="Repeat your password" required /><button class="password-toggle" type="button" data-password-target="create-password-confirm" aria-label="Show password">◉</button></div></label>
-          <button class="login-button" type="submit">Create account <span aria-hidden="true">→</span></button>
+          <button class="login-button" id="create-submit" type="submit">Create account <span aria-hidden="true">→</span></button>
           <p class="login-error" id="create-error" role="alert" hidden></p>
           <p class="login-success" id="create-success" role="status" hidden></p>
         </form>
@@ -86,11 +99,12 @@
       createSuccess.hidden = true;
       switchCopy.textContent = showCreate ? 'Already have an account?' : 'Need an account?';
       createAccountLink.textContent = showCreate ? 'Sign in' : 'Create one';
-      (showCreate ? document.getElementById('create-username') : document.getElementById('login-email')).focus();
+      if (showCreate) document.getElementById('create-first-name').focus();
+      else document.getElementById('login-email').focus();
     }
 
-    async function requestAccount(path, username, password) {
-      const response = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username, password }) });
+    async function requestAccount(path, username, password, extra = {}) {
+      const response = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username, password, ...extra }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || 'Unable to complete the request.');
       return result.user;
@@ -105,6 +119,8 @@
         sessionStorage.setItem('ledgerly-auth', 'true');
         sessionStorage.setItem('ledgerly-user', user.username);
         sessionStorage.setItem('ledgerly-role', user.role);
+        sessionStorage.setItem('ledgerly-first-name', user.first_name || '');
+        sessionStorage.setItem('ledgerly-last-name', user.last_name || '');
         window.location.href = 'billing.html';
       } catch (requestError) {
         error.textContent = requestError.message;
@@ -125,9 +141,9 @@
         return;
       }
       try {
-    await requestAccount('/api/register', username, password);
-    localStorage.removeItem(`ledgerly-state:${username}`);
-    sessionStorage.setItem('ledgerly-new-account', username);
+        await requestAccount('/api/register', username, password, { first_name: document.getElementById('create-first-name').value.trim(), last_name: document.getElementById('create-last-name').value.trim() });
+        localStorage.removeItem(`ledgerly-state:${username}`);
+        sessionStorage.setItem('ledgerly-new-account', username);
         createForm.reset();
         showCreateForm(false);
         document.getElementById('login-email').value = username;

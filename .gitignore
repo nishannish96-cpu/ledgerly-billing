@@ -7,4 +7,5 @@ env/
 .env.*
 node_modules/
 *.log
+ledgerly.db
 .DS_Store

@@ -5,6 +5,12 @@ services:
     buildCommand: "python -m py_compile server.py"
     startCommand: "python server.py"
     healthCheckPath: "/"
+    disk:
+      name: icbilling-data
+      mountPath: /var/data
+      sizeGB: 1
     envVars:
       - key: PYTHON_VERSION
         value: "3.11.9"
+      - key: LEDGERLY_DATABASE
+        value: /var/data/ledgerly.db
