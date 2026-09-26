@@ -1,4 +1,4 @@
-const CACHE_NAME = 'ledgerly-shell-v44';
+const CACHE_NAME = 'ledgerly-shell-v45';
 const APP_SHELL = [
   './',
   './index.html',
@@ -7,7 +7,7 @@ const APP_SHELL = [
   './styles.css',
   './login.css',
   './dark-mode.css',
-  './app.js?v=117',
+  './app.js?v=118',
   './manifest.json',
   './icon.svg'
 ];
