@@ -32,11 +32,19 @@ const expenseDescription = document.getElementById('expense-description');
 const expenseAmount = document.getElementById('expense-amount');
 const expenseParticipants = document.getElementById('expense-participants');
 const expenseError = document.getElementById('expense-error');
+const settlementForm = document.getElementById('settlement-form');
+const settlementRecipient = document.getElementById('settlement-recipient');
+const settlementAmount = document.getElementById('settlement-amount');
+const settlementPayer = document.getElementById('settlement-payer');
+const settlementLimit = document.getElementById('settlement-limit');
+const settlementError = document.getElementById('settlement-error');
 
 const balanceTableBody = document.querySelector('#balance-table tbody');
 const expenseTableBody = document.querySelector('#expense-table tbody');
 const settlementList = document.getElementById('settlement-list');
+const settlementHistoryBody = document.querySelector('#settlement-history-table tbody');
 const investedGrid = document.getElementById('invested-grid');
+let latestBalances = [];
 
 async function requestJSON(path, options = {}) {
 	const headers = { ...(options.headers || {}), Authorization: `Bearer ${getToken()}` };
@@ -52,10 +60,11 @@ async function requestJSON(path, options = {}) {
 
 async function loadData() {
 	const data = await requestJSON('/api/data');
+	latestBalances = data.balances;
 	renderRoommates(data.roommates);
 	renderInvested(data.balances);
 	renderBalances(data.balances);
-	renderSettlements(data.settlements);
+	renderSettlements(data.settlements, data.balances, data.settlement_payments);
 	renderExpenses(data.expenses);
 }
 
@@ -86,11 +95,56 @@ function renderBalances(balances) {
 		: '<tr><td colspan="4" class="empty-note">Add roommates and expenses to see balances.</td></tr>';
 }
 
-function renderSettlements(settlements) {
+function renderSettlements(settlements, balances, payments) {
 	settlementList.innerHTML = settlements.length
 		? settlements.map(s => `<li><span>${s.from} pays ${s.to}</span><span class="amount">${money(s.amount)}</span></li>`).join('')
 		: '<li class="empty-note">Everyone is settled up. 🎉</li>';
+
+	const payer = balances.find(balance => balance.name.toLowerCase() === currentUsername());
+	const recipients = balances.filter(balance => balance.name.toLowerCase() !== currentUsername() && balance.net > 0.005);
+	settlementPayer.textContent = `Paying as ${currentUsername()}. Only your own repayments can be recorded.`;
+	settlementRecipient.innerHTML = recipients.map(balance => `<option value="${balance.name}">${balance.name}</option>`).join('');
+	const canPay = payer?.net < -0.005 && recipients.length > 0;
+	settlementRecipient.disabled = !canPay;
+	settlementAmount.disabled = !canPay;
+	settlementForm.querySelector('[type="submit"]').disabled = !canPay;
+	if (!canPay) {
+		settlementLimit.textContent = 'You do not currently owe a settlement.';
+		settlementAmount.removeAttribute('max');
+	} else {
+		updateSettlementLimit(balances, payer);
+	}
+
+	settlementHistoryBody.innerHTML = payments.length
+		? payments.map(payment => `<tr><td>${new Date(payment.created_at.replace(' ', 'T') + 'Z').toLocaleString()}</td><td>${payment.paid_by}</td><td>${payment.paid_to}</td><td>${money(payment.amount)}</td></tr>`).join('')
+		: '<tr><td colspan="4" class="empty-note">No settlement payments recorded yet.</td></tr>';
 }
+
+function updateSettlementLimit(balances, payer = balances.find(balance => balance.name.toLowerCase() === currentUsername())) {
+	const recipient = balances.find(balance => balance.name === settlementRecipient.value);
+	const maximum = Math.max(0, Math.min(-(Number(payer?.net) || 0), Number(recipient?.net) || 0));
+	settlementAmount.max = maximum.toFixed(2);
+	settlementLimit.textContent = `You can pay up to ${money(maximum)} to ${recipient?.name || 'this roommate'}.`;
+}
+
+settlementRecipient.addEventListener('change', () => updateSettlementLimit(latestBalances));
+
+settlementForm.addEventListener('submit', async event => {
+	event.preventDefault();
+	settlementError.hidden = true;
+	try {
+		await requestJSON('/api/settlements', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ to: settlementRecipient.value, amount: settlementAmount.value }),
+		});
+		settlementForm.reset();
+		await loadData();
+	} catch (error) {
+		settlementError.textContent = error.message;
+		settlementError.hidden = false;
+	}
+});
 
 function renderInvested(balances) {
 	const total = balances.reduce((sum, b) => sum + (Number(b.paid) || 0), 0);
