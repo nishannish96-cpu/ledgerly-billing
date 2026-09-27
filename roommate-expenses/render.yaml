@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: roomies-expenses
+    runtime: python
+    buildCommand: "python -m py_compile server.py"
+    startCommand: "python server.py"
+    healthCheckPath: "/"
+    disk:
+      name: roomies-expenses-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+      - key: ROOMMATE_DATABASE
+        value: /var/data/roommates.db
