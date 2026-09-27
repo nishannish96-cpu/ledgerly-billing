@@ -81,6 +81,10 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
 
 .error-text { color: var(--danger); font-size: 12px; margin: 8px 0 0; }
 
+.toast { position: fixed; z-index: 10; left: 50%; bottom: 24px; max-width: calc(100vw - 32px); padding: 12px 18px; border-radius: 8px; color: #fff; background: #242936; box-shadow: 0 8px 24px rgba(20, 25, 38, 0.2); font-size: 13px; font-weight: 600; opacity: 0; transform: translate(-50%, 10px); transition: opacity 160ms ease, transform 160ms ease; }
+.toast:not([hidden]) { opacity: 1; transform: translate(-50%, 0); }
+.toast[hidden] { display: none; }
+
 @media (max-width: 760px) {
   .layout { grid-template-columns: 1fr; }
   .form-row { grid-template-columns: 1fr; }

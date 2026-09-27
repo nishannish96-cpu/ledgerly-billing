@@ -44,7 +44,16 @@ const expenseTableBody = document.querySelector('#expense-table tbody');
 const settlementList = document.getElementById('settlement-list');
 const settlementHistoryBody = document.querySelector('#settlement-history-table tbody');
 const investedGrid = document.getElementById('invested-grid');
+const appNotification = document.getElementById('app-notification');
 let latestBalances = [];
+let notificationTimer;
+
+function notify(message) {
+	appNotification.textContent = message;
+	appNotification.hidden = false;
+	clearTimeout(notificationTimer);
+	notificationTimer = setTimeout(() => { appNotification.hidden = true; }, 3200);
+}
 
 async function requestJSON(path, options = {}) {
 	const headers = { ...(options.headers || {}), Authorization: `Bearer ${getToken()}` };
@@ -138,6 +147,7 @@ settlementForm.addEventListener('submit', async event => {
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({ to: settlementRecipient.value, amount: settlementAmount.value }),
 		});
+		notify(`Payment of ${money(settlementAmount.value)} recorded to ${settlementRecipient.value}.`);
 		settlementForm.reset();
 		await loadData();
 	} catch (error) {
@@ -176,6 +186,7 @@ function renderExpenses(expenses) {
 async function removeRoommate(name) {
 	try {
 		await requestJSON('/api/roommates/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
+		notify(`Removed ${name}.`);
 		await loadData();
 	} catch (error) {
 		roommateError.textContent = error.message;
@@ -186,6 +197,7 @@ async function removeRoommate(name) {
 async function removeExpense(id) {
 	try {
 		await requestJSON('/api/expenses/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: Number(id) }) });
+		notify('Expense deleted.');
 		await loadData();
 	} catch (error) {
 		expenseError.textContent = error.message;
@@ -199,6 +211,7 @@ roommateForm?.addEventListener('submit', async event => {
 	const name = roommateNameInput.value.trim();
 	try {
 		await requestJSON('/api/roommates', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
+		notify(`Added ${name}.`);
 		roommateForm.reset();
 		await loadData();
 	} catch (error) {
@@ -211,16 +224,19 @@ expenseForm.addEventListener('submit', async event => {
 	event.preventDefault();
 	expenseError.hidden = true;
 	const participants = [...expenseParticipants.querySelectorAll('input[type="checkbox"]:checked')].map(input => input.value);
+	const description = expenseDescription.value.trim();
+	const amount = expenseAmount.value;
 	try {
 		await requestJSON('/api/expenses', {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({
-				description: expenseDescription.value.trim(),
-				amount: expenseAmount.value,
+				description,
+				amount,
 				participants,
 			}),
 		});
+		notify(`Added ${description} for ${money(amount)}.`);
 		expenseForm.reset();
 		await loadData();
 	} catch (error) {
