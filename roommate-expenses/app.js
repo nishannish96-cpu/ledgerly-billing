@@ -52,7 +52,7 @@ function notify(message) {
 	appNotification.textContent = message;
 	appNotification.hidden = false;
 	clearTimeout(notificationTimer);
-	notificationTimer = setTimeout(() => { appNotification.hidden = true; }, 3200);
+	notificationTimer = setTimeout(() => { appNotification.hidden = true; }, 8000);
 }
 
 async function requestJSON(path, options = {}) {
