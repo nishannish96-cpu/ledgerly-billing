@@ -38,25 +38,13 @@
           <button class="login-button" type="submit">Sign in <span aria-hidden="true">→</span></button>
           <p class="login-error" id="login-error" role="alert" hidden></p>
         </form>
-        <form id="register-form" hidden>
-          <label>Username<input id="register-username" type="text" autocomplete="username" placeholder="Choose a username" required maxlength="40" /></label>
-          <label>Password<div class="password-field"><input id="register-password" type="password" autocomplete="new-password" placeholder="Create a password" minlength="6" required /><button type="button" class="password-toggle" data-password-target="register-password" aria-label="Show password">◉</button></div></label>
-          <label>Confirm password<div class="password-field"><input id="register-password-confirm" type="password" autocomplete="new-password" placeholder="Repeat your password" required /><button type="button" class="password-toggle" data-password-target="register-password-confirm" aria-label="Show password">◉</button></div></label>
-          <button class="login-button" type="submit">Create account <span aria-hidden="true">→</span></button>
-          <p class="login-error" id="register-error" role="alert" hidden></p>
-        </form>
-        <p class="account-switch"><span id="switch-copy">New roommate?</span> <button class="account-switch-button" type="button" id="switch-link">Create account</button></p>
-        <p class="demo-note">The first person to create an account becomes the house admin.</p>
+        <p class="demo-note">Sign in with the username and password provided for your household.</p>
       </div>
     </section>
   </main>
   <script>
     const loginForm = document.getElementById('login-form');
-    const registerForm = document.getElementById('register-form');
     const loginError = document.getElementById('login-error');
-    const registerError = document.getElementById('register-error');
-    const switchLink = document.getElementById('switch-link');
-    const switchCopy = document.getElementById('switch-copy');
 
     // visiting the login page always starts a fresh sign-in, even if another roommate's session is still stored
     sessionStorage.removeItem('roomies-token');
@@ -72,18 +60,6 @@
         toggle.setAttribute('aria-label', isVisible ? 'Show password' : 'Hide password');
       });
     });
-
-    function showRegister(show) {
-      loginForm.hidden = show;
-      registerForm.hidden = !show;
-      loginError.hidden = true;
-      registerError.hidden = true;
-      switchCopy.textContent = show ? 'Already have an account?' : 'New roommate?';
-      switchLink.textContent = show ? 'Sign in' : 'Create account';
-      (show ? document.getElementById('register-username') : document.getElementById('login-username')).focus();
-    }
-
-    switchLink.addEventListener('click', () => showRegister(registerForm.hidden));
 
     async function requestJSON(path, body) {
       const response = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -114,27 +90,6 @@
       }
     });
 
-    registerForm.addEventListener('submit', async event => {
-      event.preventDefault();
-      registerError.hidden = true;
-      const password = document.getElementById('register-password').value;
-      const confirmation = document.getElementById('register-password-confirm').value;
-      if (password !== confirmation) {
-        registerError.textContent = 'Passwords do not match.';
-        registerError.hidden = false;
-        return;
-      }
-      try {
-        const result = await requestJSON('/api/register', {
-          username: document.getElementById('register-username').value.trim(),
-          password,
-        });
-        onSignedIn(result);
-      } catch (error) {
-        registerError.textContent = error.message;
-        registerError.hidden = false;
-      }
-    });
   </script>
 </body>
 </html>

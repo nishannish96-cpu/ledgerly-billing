@@ -211,27 +211,7 @@ class RoommateHandler(SimpleHTTPRequestHandler):
             payload = self.read_json()
 
             if path == '/api/register':
-                username = normalise_username(payload.get('username'))
-                password = str(payload.get('password', ''))
-                if not NAME_PATTERN.match(username):
-                    return self.send_json(400, {'error': 'Enter a username using letters, numbers, spaces, - or _ (max 40 characters).'})
-                if len(password) < 6:
-                    return self.send_json(400, {'error': 'Password must be at least 6 characters.'})
-                with connection() as database:
-                    if database.execute('SELECT 1 FROM users WHERE username = ?', (username,)).fetchone():
-                        return self.send_json(409, {'error': 'That username is already taken.'})
-                    is_first_user = database.execute('SELECT 1 FROM users LIMIT 1').fetchone() is None
-                    existing_roommate = database.execute('SELECT id FROM roommates WHERE name = ?', (username,)).fetchone()
-                    roommate_id = existing_roommate['id'] if existing_roommate else database.execute(
-                        'INSERT INTO roommates (name) VALUES (?)', (username,)).lastrowid
-                    salt, digest = password_hash(password)
-                    cursor = database.execute(
-                        'INSERT INTO users (username, password_hash, password_salt, roommate_id, is_admin) VALUES (?, ?, ?, ?, ?)',
-                        (username, digest, salt, roommate_id, 1 if is_first_user else 0),
-                    )
-                    user = database.execute('SELECT * FROM users WHERE id = ?', (cursor.lastrowid,)).fetchone()
-                token = create_session(user)
-                return self.send_json(201, {'token': token, 'user': {'username': user['username'], 'is_admin': bool(user['is_admin'])}})
+                return self.send_json(403, {'error': 'Account registration is closed. Contact the house admin.'})
 
             if path == '/api/login':
                 username = normalise_username(payload.get('username'))
