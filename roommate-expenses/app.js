@@ -19,13 +19,24 @@ document.getElementById('current-user-label').textContent = `Signed in as ${curr
 document.getElementById('logout-btn').addEventListener('click', signOut);
 const enableNotificationsButton = document.getElementById('enable-notifications');
 function syncNotificationPermissionControl() {
-	enableNotificationsButton.hidden = !('Notification' in window) || Notification.permission !== 'default';
+	const supported = 'Notification' in window;
+	enableNotificationsButton.hidden = !supported;
+	if (!supported) return;
+	const permission = Notification.permission;
+	enableNotificationsButton.disabled = permission === 'granted';
+	enableNotificationsButton.textContent = permission === 'granted'
+		? 'Browser notifications enabled'
+		: permission === 'denied' ? 'Notifications blocked' : 'Enable browser notifications';
 }
 syncNotificationPermissionControl();
 enableNotificationsButton.addEventListener('click', async () => {
+	if (Notification.permission === 'denied') {
+		notify('Notifications are blocked for this site. Allow them in browser site settings, then reload Roomies.');
+		return;
+	}
 	const permission = await Notification.requestPermission();
 	syncNotificationPermissionControl();
-	notify(permission === 'granted' ? 'Browser notifications are enabled.' : 'Browser notifications were not enabled. You can allow them in browser settings.');
+	notify(permission === 'granted' ? 'Browser notifications are enabled.' : 'Browser notifications were not enabled.');
 });
 
 const roommateForm = document.getElementById('roommate-form');
