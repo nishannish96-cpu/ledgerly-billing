@@ -210,6 +210,43 @@ class RoommateHandler(SimpleHTTPRequestHandler):
         try:
             payload = self.read_json()
 
+            if path == '/api/admin/import-local-users':
+                import_token = os.environ.get('ROOMMATE_IMPORT_TOKEN', '')
+                auth_header = self.headers.get('Authorization', '')
+                supplied_token = auth_header[7:] if auth_header.startswith('Bearer ') else ''
+                if not import_token or not secrets.compare_digest(supplied_token, import_token):
+                    return self.send_json(403, {'error': 'User import is not authorized.'})
+                users = payload.get('users')
+                if not isinstance(users, list) or not users or len(users) > 50:
+                    return self.send_json(400, {'error': 'A valid list of local users is required.'})
+                usernames = set()
+                for user in users:
+                    username = normalise_username(user.get('username'))
+                    roommate_name = normalise_name(user.get('roommate_name'))
+                    password_digest = str(user.get('password_hash', ''))
+                    password_salt = str(user.get('password_salt', ''))
+                    if not NAME_PATTERN.match(username) or not roommate_name:
+                        return self.send_json(400, {'error': 'An imported username or roommate name is invalid.'})
+                    if not re.fullmatch(r'[0-9a-f]{64}', password_digest) or not re.fullmatch(r'[0-9a-f]{32}', password_salt):
+                        return self.send_json(400, {'error': 'An imported password hash is invalid.'})
+                    if username in usernames:
+                        return self.send_json(400, {'error': 'The import contains duplicate usernames.'})
+                    usernames.add(username)
+                with connection() as database:
+                    if database.execute('SELECT 1 FROM users LIMIT 1').fetchone():
+                        return self.send_json(409, {'error': 'Render already has user accounts; no data was changed.'})
+                    for user in users:
+                        username = normalise_username(user['username'])
+                        roommate_name = normalise_name(user['roommate_name'])
+                        roommate = database.execute('SELECT id FROM roommates WHERE name = ?', (roommate_name,)).fetchone()
+                        roommate_id = roommate['id'] if roommate else database.execute(
+                            'INSERT INTO roommates (name) VALUES (?)', (roommate_name,)).lastrowid
+                        database.execute(
+                            'INSERT INTO users (username, password_hash, password_salt, roommate_id, is_admin) VALUES (?, ?, ?, ?, ?)',
+                            (username, user['password_hash'], user['password_salt'], roommate_id, int(bool(user.get('is_admin')))),
+                        )
+                return self.send_json(201, {'imported': len(users)})
+
             if path == '/api/register':
                 return self.send_json(403, {'error': 'Account registration is closed. Contact the house admin.'})
 
