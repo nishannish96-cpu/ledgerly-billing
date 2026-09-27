@@ -8,4 +8,5 @@ env/
 node_modules/
 *.log
 ledgerly.db
+roommates.db
 .DS_Store

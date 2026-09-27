@@ -14,3 +14,21 @@ services:
         value: "3.11.9"
       - key: LEDGERLY_DATABASE
         value: /var/data/ledgerly.db
+
+  - type: web
+    name: roomies-expenses
+    runtime: python
+    rootDir: roommate-expenses
+    buildCommand: "python -m py_compile server.py"
+    startCommand: "python server.py"
+    healthCheckPath: "/"
+    disk:
+      name: roomies-expenses-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+      - key: ROOMMATE_DATABASE
+        value: /var/data/roommates.db
+

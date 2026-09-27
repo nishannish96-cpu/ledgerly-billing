@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#5b4bda" />
+  <title>Roomies | Shared expense tracker</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <script>if (!sessionStorage.getItem('roomies-token')) window.location.replace('login.html');</script>
+  <div class="app-shell">
+    <header class="app-header">
+      <div class="brand"><span class="brand-mark">R</span><span>Roomies</span></div>
+      <p class="tagline">Split room expenses fairly with your roommates.</p>
+      <div class="session-bar"><span id="current-user-label">Signed in</span><button type="button" id="logout-btn" class="remove-btn">Log out</button></div>
+    </header>
+
+    <main class="layout">
+      <section class="card">
+        <h2>Add an expense</h2>
+        <form id="expense-form" class="stacked-form">
+          <label>What was purchased
+            <input id="expense-description" type="text" placeholder="e.g. Groceries, Wi-Fi bill" required maxlength="120" />
+          </label>
+          <label>Amount (SAR)
+            <input id="expense-amount" type="number" step="0.01" min="0.01" placeholder="0.00" required />
+          </label>
+          <fieldset class="participants-box">
+            <legend>Split between (you are recorded as the payer)</legend>
+            <div id="expense-participants" class="chip-checklist"></div>
+          </fieldset>
+          <button class="primary-btn full" type="submit">Add expense →</button>
+          <p id="expense-error" class="error-text" hidden></p>
+        </form>
+      </section>
+
+      <section class="card wide">
+        <h2>Total invested</h2>
+        <div id="invested-grid" class="invested-grid"></div>
+      </section>
+
+      <section class="card wide" hidden>
+        <h2>Roommates</h2>
+        <ul id="roommate-list" class="chip-list"></ul>
+
+        <p id="admin-locked-note" class="empty-note">Only the house admin can add or remove roommates.</p>
+
+        <div id="admin-panel" hidden>
+          <form id="roommate-form" class="inline-form">
+            <input id="roommate-name" type="text" placeholder="Add roommate name (e.g. guest)" required maxlength="40" />
+            <button class="primary-btn" type="submit">＋ Add</button>
+          </form>
+        </div>
+        <p id="roommate-error" class="error-text" hidden></p>
+      </section>
+
+      <section class="card wide">
+        <h2>Balances</h2>
+        <div class="table-wrap">
+          <table class="data-table" id="balance-table">
+            <thead><tr><th>Roommate</th><th>Paid</th><th>Share</th><th>Net balance</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="card wide">
+        <h2>Who owes whom</h2>
+        <ul id="settlement-list" class="settlement-list"></ul>
+      </section>
+
+      <section class="card wide">
+        <h2>Expense history</h2>
+        <div class="table-wrap">
+          <table class="data-table" id="expense-table">
+            <thead><tr><th>Item</th><th>Amount</th><th>Paid by</th><th>Split between</th><th>Date</th><th></th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>

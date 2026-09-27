@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#5b4bda" />
+  <title>Sign in | Roomies</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="login.css" />
+</head>
+<body>
+  <main class="login-shell">
+    <section class="login-intro">
+      <div class="brand"><span class="brand-mark">R</span><span>Roomies</span></div>
+      <div class="intro-copy">
+        <p class="eyebrow">Shared room expenses</p>
+        <h1>Split bills fairly.</h1>
+        <p>Track who paid for what and settle up with your roommates in one place.</p>
+      </div>
+    </section>
+    <section class="login-panel">
+      <div class="login-card">
+        <div class="mobile-brand"><span class="brand-mark">R</span><span>Roomies</span></div>
+        <p class="eyebrow">Welcome back</p>
+        <h2>Sign in to Roomies</h2>
+        <p class="login-copy">Use your account to add and track shared expenses.</p>
+        <form id="login-form">
+          <label>Username<input id="login-username" type="text" autocomplete="username" placeholder="Enter your username" required maxlength="40" /></label>
+          <label>Password<div class="password-field"><input id="login-password" type="password" autocomplete="current-password" placeholder="Enter your password" required /><button type="button" class="password-toggle" data-password-target="login-password" aria-label="Show password">◉</button></div></label>
+          <button class="login-button" type="submit">Sign in <span aria-hidden="true">→</span></button>
+          <p class="login-error" id="login-error" role="alert" hidden></p>
+        </form>
+        <form id="register-form" hidden>
+          <label>Username<input id="register-username" type="text" autocomplete="username" placeholder="Choose a username" required maxlength="40" /></label>
+          <label>Password<div class="password-field"><input id="register-password" type="password" autocomplete="new-password" placeholder="Create a password" minlength="6" required /><button type="button" class="password-toggle" data-password-target="register-password" aria-label="Show password">◉</button></div></label>
+          <label>Confirm password<div class="password-field"><input id="register-password-confirm" type="password" autocomplete="new-password" placeholder="Repeat your password" required /><button type="button" class="password-toggle" data-password-target="register-password-confirm" aria-label="Show password">◉</button></div></label>
+          <button class="login-button" type="submit">Create account <span aria-hidden="true">→</span></button>
+          <p class="login-error" id="register-error" role="alert" hidden></p>
+        </form>
+        <p class="account-switch"><span id="switch-copy">New roommate?</span> <button class="account-switch-button" type="button" id="switch-link">Create account</button></p>
+        <p class="demo-note">The first person to create an account becomes the house admin.</p>
+      </div>
+    </section>
+  </main>
+  <script>
+    const loginForm = document.getElementById('login-form');
+    const registerForm = document.getElementById('register-form');
+    const loginError = document.getElementById('login-error');
+    const registerError = document.getElementById('register-error');
+    const switchLink = document.getElementById('switch-link');
+    const switchCopy = document.getElementById('switch-copy');
+
+    // visiting the login page always starts a fresh sign-in, even if another roommate's session is still stored
+    sessionStorage.removeItem('roomies-token');
+    sessionStorage.removeItem('roomies-username');
+    sessionStorage.removeItem('roomies-is-admin');
+
+    document.querySelectorAll('.password-toggle').forEach(toggle => {
+      toggle.addEventListener('click', () => {
+        const input = document.getElementById(toggle.dataset.passwordTarget);
+        const isVisible = input.type === 'text';
+        input.type = isVisible ? 'password' : 'text';
+        toggle.textContent = isVisible ? '◉' : '◌';
+        toggle.setAttribute('aria-label', isVisible ? 'Show password' : 'Hide password');
+      });
+    });
+
+    function showRegister(show) {
+      loginForm.hidden = show;
+      registerForm.hidden = !show;
+      loginError.hidden = true;
+      registerError.hidden = true;
+      switchCopy.textContent = show ? 'Already have an account?' : 'New roommate?';
+      switchLink.textContent = show ? 'Sign in' : 'Create account';
+      (show ? document.getElementById('register-username') : document.getElementById('login-username')).focus();
+    }
+
+    switchLink.addEventListener('click', () => showRegister(registerForm.hidden));
+
+    async function requestJSON(path, body) {
+      const response = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.error || 'Something went wrong.');
+      return result;
+    }
+
+    function onSignedIn(result) {
+      sessionStorage.setItem('roomies-token', result.token);
+      sessionStorage.setItem('roomies-username', result.user.username);
+      sessionStorage.setItem('roomies-is-admin', result.user.is_admin ? '1' : '0');
+      window.location.href = 'index.html';
+    }
+
+    loginForm.addEventListener('submit', async event => {
+      event.preventDefault();
+      loginError.hidden = true;
+      try {
+        const result = await requestJSON('/api/login', {
+          username: document.getElementById('login-username').value.trim(),
+          password: document.getElementById('login-password').value,
+        });
+        onSignedIn(result);
+      } catch (error) {
+        loginError.textContent = error.message;
+        loginError.hidden = false;
+      }
+    });
+
+    registerForm.addEventListener('submit', async event => {
+      event.preventDefault();
+      registerError.hidden = true;
+      const password = document.getElementById('register-password').value;
+      const confirmation = document.getElementById('register-password-confirm').value;
+      if (password !== confirmation) {
+        registerError.textContent = 'Passwords do not match.';
+        registerError.hidden = false;
+        return;
+      }
+      try {
+        const result = await requestJSON('/api/register', {
+          username: document.getElementById('register-username').value.trim(),
+          password,
+        });
+        onSignedIn(result);
+      } catch (error) {
+        registerError.textContent = error.message;
+        registerError.hidden = false;
+      }
+    });
+  </script>
+</body>
+</html>
