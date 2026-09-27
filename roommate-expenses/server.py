@@ -300,6 +300,19 @@ class RoommateHandler(SimpleHTTPRequestHandler):
             if not session:
                 return self.send_json(401, {'error': 'Please sign in again.'})
 
+            if path == '/api/admin/clear-transactions':
+                if not session['is_admin']:
+                    return self.send_json(403, {'error': 'Only the house admin can clear transaction data.'})
+                if payload.get('confirm') is not True:
+                    return self.send_json(400, {'error': 'Explicit confirmation is required.'})
+                with connection() as database:
+                    expenses = database.execute('SELECT COUNT(*) FROM expenses').fetchone()[0]
+                    settlements = database.execute('SELECT COUNT(*) FROM settlement_payments').fetchone()[0]
+                    database.execute('DELETE FROM expense_splits')
+                    database.execute('DELETE FROM expenses')
+                    database.execute('DELETE FROM settlement_payments')
+                return self.send_json(200, {'cleared': {'expenses': expenses, 'settlements': settlements}})
+
             if path == '/api/roommates':
                 if not session['is_admin']:
                     return self.send_json(403, {'error': 'Only the admin can add roommates.'})
