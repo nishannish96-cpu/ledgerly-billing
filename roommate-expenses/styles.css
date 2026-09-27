@@ -20,8 +20,10 @@ button { cursor: pointer; border: 0; }
 .brand { display: inline-flex; align-items: center; gap: 10px; font-family: Manrope, sans-serif; font-weight: 800; font-size: 24px; }
 .brand-mark { display: grid; place-items: center; background: var(--accent); color: #fff; width: 36px; height: 36px; border-radius: 10px; font-size: 18px; }
 .tagline { color: var(--muted); margin: 10px 0 0; }
-.session-bar { display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 14px; font-size: 12px; color: var(--muted); }
+.session-bar { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 12px; margin-top: 14px; font-size: 12px; color: var(--muted); }
 .session-bar #logout-btn { font-size: 12px; }
+.notification-btn { padding: 6px 9px; border: 1px solid var(--line); border-radius: 6px; color: var(--accent-dark); background: #fff; font-size: 11px; font-weight: 700; }
+.notification-btn[hidden] { display: none; }
 
 .layout { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
 .card { background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 20px 22px; box-shadow: 0 4px 16px rgba(30, 35, 48, 0.04); }

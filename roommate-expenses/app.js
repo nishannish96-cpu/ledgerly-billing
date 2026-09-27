@@ -17,6 +17,16 @@ if (!getToken()) window.location.replace('login.html');
 
 document.getElementById('current-user-label').textContent = `Signed in as ${currentUsername()}${isAdmin() ? ' (admin)' : ''}`;
 document.getElementById('logout-btn').addEventListener('click', signOut);
+const enableNotificationsButton = document.getElementById('enable-notifications');
+function syncNotificationPermissionControl() {
+	enableNotificationsButton.hidden = !('Notification' in window) || Notification.permission !== 'default';
+}
+syncNotificationPermissionControl();
+enableNotificationsButton.addEventListener('click', async () => {
+	const permission = await Notification.requestPermission();
+	syncNotificationPermissionControl();
+	notify(permission === 'granted' ? 'Browser notifications are enabled.' : 'Browser notifications were not enabled. You can allow them in browser settings.');
+});
 
 const roommateForm = document.getElementById('roommate-form');
 const roommateNameInput = document.getElementById('roommate-name');
@@ -47,12 +57,36 @@ const investedGrid = document.getElementById('invested-grid');
 const appNotification = document.getElementById('app-notification');
 let latestBalances = [];
 let notificationTimer;
+let knownInputKeys = null;
+let lastDataSignature = null;
 
 function notify(message) {
 	appNotification.textContent = message;
 	appNotification.hidden = false;
 	clearTimeout(notificationTimer);
 	notificationTimer = setTimeout(() => { appNotification.hidden = true; }, 8000);
+	if ('Notification' in window && Notification.permission === 'granted') {
+		try {
+			const popup = new Notification('Roomies', { body: message, tag: `roomies-${Date.now()}` });
+			popup.onclick = () => { window.focus(); popup.close(); };
+		} catch {}
+	}
+}
+
+function notifyNewSharedInputs(data) {
+	const inputs = [
+		...(data.roommates || []).map(roommate => ({ key: `roommate:${roommate.id}`, message: `${roommate.name} was added to the household.` })),
+		...(data.expenses || []).map(expense => ({ key: `expense:${expense.id}`, message: `${expense.paid_by} added ${expense.description} (${money(expense.amount)}).` })),
+		...(data.settlement_payments || []).map(payment => ({ key: `settlement:${payment.id}`, message: `${payment.paid_by} paid ${money(payment.amount)} to ${payment.paid_to}.` })),
+	];
+	if (knownInputKeys === null) {
+		knownInputKeys = new Set(inputs.map(input => input.key));
+		return;
+	}
+	const added = inputs.filter(input => !knownInputKeys.has(input.key));
+	inputs.forEach(input => knownInputKeys.add(input.key));
+	if (added.length === 1) notify(added[0].message);
+	else if (added.length > 1) notify(`${added.length} new shared updates. Latest: ${added[0].message}`);
 }
 
 async function requestJSON(path, options = {}) {
@@ -69,12 +103,34 @@ async function requestJSON(path, options = {}) {
 
 async function loadData() {
 	const data = await requestJSON('/api/data');
+	notifyNewSharedInputs(data);
+	const signature = JSON.stringify([data.roommates, data.expenses, data.balances, data.settlements, data.settlement_payments]);
+	if (signature === lastDataSignature) return;
+	const hasPreviousData = lastDataSignature !== null;
+	const expenseDraft = {
+		description: expenseDescription.value,
+		amount: expenseAmount.value,
+		participants: [...expenseParticipants.querySelectorAll('input[type="checkbox"]:checked')].map(input => input.value),
+		allParticipantsSelected: [...expenseParticipants.querySelectorAll('input[type="checkbox"]')].every(input => input.checked),
+	};
+	const settlementDraft = { recipient: settlementRecipient.value, amount: settlementAmount.value };
+	lastDataSignature = signature;
 	latestBalances = data.balances;
 	renderRoommates(data.roommates);
 	renderInvested(data.balances);
 	renderBalances(data.balances);
 	renderSettlements(data.settlements, data.balances, data.settlement_payments);
 	renderExpenses(data.expenses);
+	if (hasPreviousData) {
+		expenseDescription.value = expenseDraft.description;
+		expenseAmount.value = expenseDraft.amount;
+		expenseParticipants.querySelectorAll('input[type="checkbox"]').forEach(input => {
+			input.checked = expenseDraft.allParticipantsSelected || expenseDraft.participants.includes(input.value);
+		});
+		if ([...settlementRecipient.options].some(option => option.value === settlementDraft.recipient)) settlementRecipient.value = settlementDraft.recipient;
+		settlementAmount.value = settlementDraft.amount;
+		if (!settlementRecipient.disabled) updateSettlementLimit(data.balances);
+	}
 }
 
 function renderRoommates(roommates) {
@@ -147,7 +203,6 @@ settlementForm.addEventListener('submit', async event => {
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({ to: settlementRecipient.value, amount: settlementAmount.value }),
 		});
-		notify(`Payment of ${money(settlementAmount.value)} recorded to ${settlementRecipient.value}.`);
 		settlementForm.reset();
 		await loadData();
 	} catch (error) {
@@ -211,7 +266,6 @@ roommateForm?.addEventListener('submit', async event => {
 	const name = roommateNameInput.value.trim();
 	try {
 		await requestJSON('/api/roommates', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
-		notify(`Added ${name}.`);
 		roommateForm.reset();
 		await loadData();
 	} catch (error) {
@@ -236,7 +290,6 @@ expenseForm.addEventListener('submit', async event => {
 				participants,
 			}),
 		});
-		notify(`Added ${description} for ${money(amount)}.`);
 		expenseForm.reset();
 		await loadData();
 	} catch (error) {
@@ -248,4 +301,12 @@ expenseForm.addEventListener('submit', async event => {
 loadData().catch(error => {
 	roommateError.textContent = error.message;
 	roommateError.hidden = false;
+});
+
+setInterval(() => {
+	if (document.visibilityState === 'visible') loadData().catch(() => {});
+}, 5000);
+
+document.addEventListener('visibilitychange', () => {
+	if (document.visibilityState === 'visible') loadData().catch(() => {});
 });
