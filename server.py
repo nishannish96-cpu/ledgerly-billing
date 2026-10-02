@@ -213,18 +213,21 @@ class LedgerlyHandler(SimpleHTTPRequestHandler):
     def authenticated_user(self, database):
         authorization = self.headers.get('Authorization', '')
         token = authorization[7:] if authorization.startswith('Bearer ') else ''
-        if token in ('', 'undefined', 'null'):
-            cookies = SimpleCookie()
-            cookies.load(self.headers.get('Cookie', ''))
-            session_cookie = cookies.get('ledgerly-session')
-            token = session_cookie.value if session_cookie else ''
-        if not token:
-            return None
-        return database.execute('''
-            SELECT users.* FROM auth_sessions
-            JOIN users ON users.id = auth_sessions.user_id
-            WHERE auth_sessions.token_hash = ? AND auth_sessions.expires_at > ?
-        ''', (session_token_hash(token), int(time.time()))).fetchone()
+        tokens = [token] if token not in ('', 'undefined', 'null') else []
+        cookies = SimpleCookie()
+        cookies.load(self.headers.get('Cookie', ''))
+        session_cookie = cookies.get('ledgerly-session')
+        if session_cookie and session_cookie.value not in tokens:
+            tokens.append(session_cookie.value)
+        for session_token in tokens:
+            user = database.execute('''
+                SELECT users.* FROM auth_sessions
+                JOIN users ON users.id = auth_sessions.user_id
+                WHERE auth_sessions.token_hash = ? AND auth_sessions.expires_at > ?
+            ''', (session_token_hash(session_token), int(time.time()))).fetchone()
+            if user:
+                return user
+        return None
 
     @staticmethod
     def create_company(database, name):
