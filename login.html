@@ -105,7 +105,7 @@
       const response = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username, password, ...extra }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || 'Unable to complete the request.');
-      return result.user;
+      return result;
     }
 
     form.addEventListener('submit', async event => {
@@ -113,9 +113,10 @@
       const email = document.getElementById('login-email').value.trim().toLowerCase();
       const password = document.getElementById('login-password').value;
       try {
-        const user = await requestAccount('/api/login', email, password);
+        const result = await requestAccount('/api/login', email, password);
+        const user = result.user;
         sessionStorage.setItem('ledgerly-auth', 'true');
-        sessionStorage.setItem('ledgerly-token', user.token);
+        sessionStorage.setItem('ledgerly-token', result.token);
         sessionStorage.setItem('ledgerly-user', user.username);
         sessionStorage.setItem('ledgerly-role', user.role);
         sessionStorage.setItem('ledgerly-first-name', user.first_name || '');
