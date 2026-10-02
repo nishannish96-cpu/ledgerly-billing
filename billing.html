@@ -57,7 +57,7 @@
 </head>
 <body>
   <script>if (new URLSearchParams(window.location.search).has('clear-local-data')) { localStorage.clear(); sessionStorage.clear(); window.location.replace('login.html'); } else if (new URLSearchParams(window.location.search).has('logout-all')) { sessionStorage.clear(); window.location.replace('login.html'); }</script>
-  <script>if (sessionStorage.getItem('ledgerly-auth') !== 'true' || !sessionStorage.getItem('ledgerly-token')) window.location.replace('login.html');</script>
+  <script>if (sessionStorage.getItem('ledgerly-auth') !== 'true') window.location.replace('login.html');</script>
   <div class="app-shell">
     <aside class="sidebar">
       <div class="brand"><span class="brand-mark">L</span><span>ledgerly</span></div>
@@ -138,7 +138,7 @@
       </form>
     </section>
   </div>
-  <script>if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js?v=57');</script>
+  <script>if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js?v=58');</script>
   <script src="app.js?v=131"></script>
 </body>
 </html>

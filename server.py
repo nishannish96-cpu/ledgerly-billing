@@ -7,6 +7,7 @@ import smtplib
 import sqlite3
 import time
 from email.message import EmailMessage
+from http.cookies import SimpleCookie
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -195,11 +196,13 @@ class LedgerlyHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(ROOT), **kwargs)
 
-    def send_json(self, status, payload):
+    def send_json(self, status, payload, extra_headers=None):
         body = json.dumps(payload).encode()
         self.send_response(status)
         self.send_header('Content-Type', 'application/json')
         self.send_header('Content-Length', str(len(body)))
+        for name, value in (extra_headers or {}).items():
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(body)
 
@@ -210,6 +213,11 @@ class LedgerlyHandler(SimpleHTTPRequestHandler):
     def authenticated_user(self, database):
         authorization = self.headers.get('Authorization', '')
         token = authorization[7:] if authorization.startswith('Bearer ') else ''
+        if token in ('', 'undefined', 'null'):
+            cookies = SimpleCookie()
+            cookies.load(self.headers.get('Cookie', ''))
+            session_cookie = cookies.get('ledgerly-session')
+            token = session_cookie.value if session_cookie else ''
         if not token:
             return None
         return database.execute('''
@@ -236,10 +244,16 @@ class LedgerlyHandler(SimpleHTTPRequestHandler):
             if path == '/api/logout':
                 authorization = self.headers.get('Authorization', '')
                 token = authorization[7:] if authorization.startswith('Bearer ') else ''
+                if token in ('', 'undefined', 'null'):
+                    cookies = SimpleCookie()
+                    cookies.load(self.headers.get('Cookie', ''))
+                    session_cookie = cookies.get('ledgerly-session')
+                    token = session_cookie.value if session_cookie else ''
                 if token:
                     with connection() as database:
                         database.execute('DELETE FROM auth_sessions WHERE token_hash = ?', (session_token_hash(token),))
-                return self.send_json(200, {'logged_out': True})
+                secure = '; Secure' if self.headers.get('X-Forwarded-Proto') == 'https' else ''
+                return self.send_json(200, {'logged_out': True}, {'Set-Cookie': f'ledgerly-session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0{secure}'})
             if path == '/api/verify-registration':
                 code = str(payload.get('code', '')).strip()
                 if not username or not code:
@@ -310,6 +324,7 @@ class LedgerlyHandler(SimpleHTTPRequestHandler):
             if password and len(password) < 6:
                 return self.send_json(400, {'error': 'Password must be at least 6 characters.'})
             login_result = None
+            login_cookie = None
             with connection() as database:
                 if path == '/api/update-user':
                     authenticated = self.authenticated_user(database)
@@ -359,7 +374,9 @@ class LedgerlyHandler(SimpleHTTPRequestHandler):
                 if not secrets.compare_digest(digest, user['password_hash']):
                     return self.send_json(401, {'error': 'Invalid username or password.'})
                 login_result = {'token': create_session(database, user), 'user': public_user(user)}
-            return self.send_json(200, login_result)
+                secure = '; Secure' if self.headers.get('X-Forwarded-Proto') == 'https' else ''
+                login_cookie = f"ledgerly-session={login_result['token']}; Path=/; HttpOnly; SameSite=Lax; Max-Age={SESSION_TTL_SECONDS}{secure}"
+            return self.send_json(200, login_result, {'Set-Cookie': login_cookie})
         except (ValueError, json.JSONDecodeError):
             self.send_json(400, {'error': 'Invalid request.'})
 
