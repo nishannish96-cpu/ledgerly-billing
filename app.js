@@ -39,6 +39,8 @@ try {
 }
 const defaultCompany = { name: '', initials: '', vat: '', phone: '', email: '', location: '', address: '' };
 let state = { view: 'overview', quotations: savedState?.quotations || [], invoices: savedState?.invoices || [], products: savedState?.products || [], deliveryNotes: savedState?.deliveryNotes || [], customers: savedState?.customers || [], returns: savedState?.returns || [], inventoryHistory: savedState?.inventoryHistory || [], company: savedState?.company || defaultCompany, credentials: savedState?.credentials || { username: activeUsername, password: '' }, users: savedState?.users || [{ username: activeUsername, password: '', role: sessionStorage.getItem('ledgerly-role') || 'admin' }] };
+function normalizeWorkspaceUsers() { state.users = (Array.isArray(state.users) ? state.users : []).filter(user => user && typeof user.username === 'string'); }
+normalizeWorkspaceUsers();
 let invoiceDraft = null;
 let remoteStateReady = false;
 let localStateDirty = false;
@@ -133,6 +135,7 @@ async function loadRemoteState() {
 			? mergeWorkspaceStates(result.state, currentSnapshot)
 			: snapshotForRole(result.state, currentSnapshot);
 		state = { ...state, ...mergedSnapshot };
+		normalizeWorkspaceUsers();
 		localStorage.setItem(accountStorageKey, JSON.stringify(stateSnapshot()));
 		if (JSON.stringify(mergedSnapshot) !== JSON.stringify(currentSnapshot)) { render(); syncCompanyHeader(); syncSettingsAccess(); }
 		remoteStateReady = true;
@@ -144,7 +147,7 @@ async function loadRemoteState() {
 		syncSettingsAccess();
 	} catch { remoteStateReady = true; }
 }
-async function refreshRemoteState() { if (!remoteStateReady || localStateDirty || remoteRefreshInProgress) return; remoteRefreshInProgress = true; try { const response = await fetch('/api/state', { headers: { Authorization: `Bearer ${sessionStorage.getItem('ledgerly-token') || ''}` } }); if (response.status === 401) { sessionStorage.clear(); window.location.replace('login.html'); return; } if (!response.ok) return; const result = await response.json(); if (Number(result.revision) <= lastRemoteRevision) return; lastRemoteRevision = Number(result.revision) || 0; if (result.role) sessionStorage.setItem('ledgerly-role', result.role); const currentView = state.view; const customerDetail = state.customerDetail; state = { ...state, ...snapshotForRole(result.state, stateSnapshot()), view: currentView, customerDetail }; localStorage.setItem(accountStorageKey, JSON.stringify(stateSnapshot())); render(); syncCompanyHeader(); syncSettingsAccess(); } finally { remoteRefreshInProgress = false; } }
+async function refreshRemoteState() { if (!remoteStateReady || localStateDirty || remoteRefreshInProgress) return; remoteRefreshInProgress = true; try { const response = await fetch('/api/state', { headers: { Authorization: `Bearer ${sessionStorage.getItem('ledgerly-token') || ''}` } }); if (response.status === 401) { sessionStorage.clear(); window.location.replace('login.html'); return; } if (!response.ok) return; const result = await response.json(); if (Number(result.revision) <= lastRemoteRevision) return; lastRemoteRevision = Number(result.revision) || 0; if (result.role) sessionStorage.setItem('ledgerly-role', result.role); const currentView = state.view; const customerDetail = state.customerDetail; state = { ...state, ...snapshotForRole(result.state, stateSnapshot()), view: currentView, customerDetail }; normalizeWorkspaceUsers(); localStorage.setItem(accountStorageKey, JSON.stringify(stateSnapshot())); render(); syncCompanyHeader(); syncSettingsAccess(); } finally { remoteRefreshInProgress = false; } }
 setInterval(() => { if (remoteStateReady && (localStateDirty || localStorage.getItem(pendingSyncKey) === 'true')) { const snapshot = stateSnapshot(); syncStateToServer(snapshot).then(() => markStateSynced(snapshot)).catch(() => {}); } }, 5000);
 setInterval(() => refreshRemoteState().catch(() => {}), 1000);
 window.addEventListener('online', () => { if (remoteStateReady && (localStateDirty || localStorage.getItem(pendingSyncKey) === 'true')) { const snapshot = stateSnapshot(); syncStateToServer(snapshot).then(() => markStateSynced(snapshot)).catch(() => {}); } });
