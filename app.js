@@ -599,7 +599,7 @@ document.getElementById('workspace-profile')?.addEventListener('keydown', event 
 	event.preventDefault();
 	document.getElementById('workspace-profile').click();
 });
-document.getElementById('logout-btn').addEventListener('click', () => { sessionStorage.removeItem('ledgerly-auth'); sessionStorage.removeItem('ledgerly-token'); sessionStorage.removeItem('ledgerly-user'); sessionStorage.removeItem('ledgerly-role'); window.location.href = 'login.html'; });
+document.getElementById('logout-btn').addEventListener('click', async () => { const token = sessionStorage.getItem('ledgerly-token'); if (token) await fetch('/api/logout', { method: 'POST', headers: { Authorization: `Bearer ${token}` } }).catch(() => {}); sessionStorage.removeItem('ledgerly-auth'); sessionStorage.removeItem('ledgerly-token'); sessionStorage.removeItem('ledgerly-user'); sessionStorage.removeItem('ledgerly-role'); window.location.href = 'login.html'; });
 document.getElementById('add-user-btn').addEventListener('click', async () => {
 	const isAdmin = currentRole() === 'admin';
 	if (!isAdmin) return;

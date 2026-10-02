@@ -15,7 +15,6 @@ ROOT = Path(__file__).parent
 DATABASE = Path(os.environ.get('LEDGERLY_DATABASE', str(ROOT / 'ledgerly.db')))
 ALLOWED_ROLES = {'admin', 'cashier', 'storekeeper'}
 SESSION_TTL_SECONDS = 60 * 60 * 24 * 7
-SESSIONS = {}
 
 
 def connection():
@@ -83,6 +82,14 @@ def initialise_database():
         state_columns = {row['name'] for row in database.execute('PRAGMA table_info(company_states)')}
         if 'revision' not in state_columns:
             database.execute('ALTER TABLE company_states ADD COLUMN revision INTEGER NOT NULL DEFAULT 0')
+        database.execute('''
+            CREATE TABLE IF NOT EXISTS auth_sessions (
+                token_hash TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                expires_at INTEGER NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
         for user in database.execute('SELECT id, username FROM users WHERE company_id IS NULL').fetchall():
             state_row = database.execute('SELECT state_json FROM user_states WHERE user_id = ?', (user['id'],)).fetchone()
             try:
@@ -109,9 +116,15 @@ def public_user(row):
     return {'username': row['username'], 'role': row['role'], 'is_owner': bool(row['is_owner']), 'first_name': row['first_name'], 'last_name': row['last_name']}
 
 
-def create_session(user):
+def session_token_hash(token):
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def create_session(database, user):
     token = secrets.token_urlsafe(32)
-    SESSIONS[token] = {'user_id': user['id'], 'expires_at': time.time() + SESSION_TTL_SECONDS}
+    expires_at = int(time.time()) + SESSION_TTL_SECONDS
+    database.execute('DELETE FROM auth_sessions WHERE expires_at <= ?', (int(time.time()),))
+    database.execute('INSERT INTO auth_sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)', (session_token_hash(token), user['id'], expires_at))
     return token
 
 
@@ -197,11 +210,13 @@ class LedgerlyHandler(SimpleHTTPRequestHandler):
     def authenticated_user(self, database):
         authorization = self.headers.get('Authorization', '')
         token = authorization[7:] if authorization.startswith('Bearer ') else ''
-        session = SESSIONS.get(token)
-        if not session or session['expires_at'] < time.time():
-            SESSIONS.pop(token, None)
+        if not token:
             return None
-        return database.execute('SELECT * FROM users WHERE id = ?', (session['user_id'],)).fetchone()
+        return database.execute('''
+            SELECT users.* FROM auth_sessions
+            JOIN users ON users.id = auth_sessions.user_id
+            WHERE auth_sessions.token_hash = ? AND auth_sessions.expires_at > ?
+        ''', (session_token_hash(token), int(time.time()))).fetchone()
 
     @staticmethod
     def create_company(database, name):
@@ -209,7 +224,7 @@ class LedgerlyHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
-        if path not in ('/api/register', '/api/verify-registration', '/api/login', '/api/update-user', '/api/update-user-role', '/api/state'):
+        if path not in ('/api/register', '/api/verify-registration', '/api/login', '/api/logout', '/api/update-user', '/api/update-user-role', '/api/state'):
             return super().do_POST()
         try:
             payload = self.read_json()
@@ -218,6 +233,13 @@ class LedgerlyHandler(SimpleHTTPRequestHandler):
             current_username = str(payload.get('current_username', '')).strip().lower()
             first_name = str(payload.get('first_name', '')).strip()
             last_name = str(payload.get('last_name', '')).strip()
+            if path == '/api/logout':
+                authorization = self.headers.get('Authorization', '')
+                token = authorization[7:] if authorization.startswith('Bearer ') else ''
+                if token:
+                    with connection() as database:
+                        database.execute('DELETE FROM auth_sessions WHERE token_hash = ?', (session_token_hash(token),))
+                return self.send_json(200, {'logged_out': True})
             if path == '/api/verify-registration':
                 code = str(payload.get('code', '')).strip()
                 if not username or not code:
@@ -335,7 +357,7 @@ class LedgerlyHandler(SimpleHTTPRequestHandler):
                 _, digest = password_hash(password, user['password_salt'])
                 if not secrets.compare_digest(digest, user['password_hash']):
                     return self.send_json(401, {'error': 'Invalid username or password.'})
-                return self.send_json(200, {'token': create_session(user), 'user': public_user(user)})
+                return self.send_json(200, {'token': create_session(database, user), 'user': public_user(user)})
         except (ValueError, json.JSONDecodeError):
             self.send_json(400, {'error': 'Invalid request.'})
 
