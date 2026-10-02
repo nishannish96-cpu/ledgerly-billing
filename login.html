@@ -115,6 +115,12 @@
       try {
         const result = await requestAccount('/api/login', email, password);
         const user = result.user;
+        if (!result.token) throw new Error('The server did not create a login session. Please retry.');
+        const sessionCheck = await fetch('/api/state', { headers: { Authorization: `Bearer ${result.token}` } });
+        if (!sessionCheck.ok) {
+          const sessionError = await sessionCheck.json().catch(() => ({}));
+          throw new Error(sessionError.error || `Login session check failed (${sessionCheck.status}).`);
+        }
         sessionStorage.setItem('ledgerly-auth', 'true');
         sessionStorage.setItem('ledgerly-token', result.token);
         sessionStorage.setItem('ledgerly-user', user.username);
