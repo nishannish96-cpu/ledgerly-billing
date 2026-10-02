@@ -309,6 +309,7 @@ class LedgerlyHandler(SimpleHTTPRequestHandler):
                 return self.send_json(400, {'error': 'Username and password are required.'})
             if password and len(password) < 6:
                 return self.send_json(400, {'error': 'Password must be at least 6 characters.'})
+            login_result = None
             with connection() as database:
                 if path == '/api/update-user':
                     authenticated = self.authenticated_user(database)
@@ -357,7 +358,8 @@ class LedgerlyHandler(SimpleHTTPRequestHandler):
                 _, digest = password_hash(password, user['password_salt'])
                 if not secrets.compare_digest(digest, user['password_hash']):
                     return self.send_json(401, {'error': 'Invalid username or password.'})
-                return self.send_json(200, {'token': create_session(database, user), 'user': public_user(user)})
+                login_result = {'token': create_session(database, user), 'user': public_user(user)}
+            return self.send_json(200, login_result)
         except (ValueError, json.JSONDecodeError):
             self.send_json(400, {'error': 'Invalid request.'})
 
