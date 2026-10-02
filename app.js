@@ -542,15 +542,14 @@ function printReturnInvoice(returnNumber) {
 	const returned = state.returns.find(item => item.no === returnNumber);
 	const invoice = returned && state.invoices.find(item => item.no === returned.invoice);
 	if (!returned || !invoice) return;
-	const rows = lineItemTableRows(returned.items || []);
+	const rows = (returned.items || []).map((item, index) => { const line = itemLineValues(item); return `<tr><td>${index + 1}</td><td>${item.product || item.name || ''}</td><td class="num">${line.quantity}</td><td>${line.unit}</td><td class="num">${money(line.price)}</td><td class="num">${money(line.discount)}</td><td class="num">${money(line.net)}</td><td class="num">${money(line.vat)}</td><td class="num">${money(line.total)}</td></tr>`; }).join('');
 	const netTotal = returnNetTotal(returned);
 	const refundVat = returnVatTotal(returned);
 	const refundTotal = Number(returned.refundTotal) || netTotal + refundVat;
 	const popup = window.open('', '_blank', 'width=850,height=1000');
 	if (!popup) return;
-	popup.document.write(`<html><head><title>${returned.no}</title><style>@page{size:A4;margin:0}*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#17211f;padding:42px 34px;max-width:900px;margin:auto}header{display:flex;justify-content:space-between;border-bottom:2px solid #08614d;padding-bottom:18px;margin-bottom:24px}h1{color:#08614d;letter-spacing:2px}h2{margin:0}.meta{line-height:1.8;color:#53625e}table{width:100%;border-collapse:collapse;margin-top:26px;font-size:10px}th{background:#08614d;color:#d5af51;text-align:left;padding:8px 5px}td{border-bottom:1px solid #dfe7df;padding:8px 5px}.total{margin:22px 0 0 auto;width:300px;border-top:2px solid #08614d;padding-top:12px;font-size:14px;line-height:1.9}.total strong{font-size:16px;color:#08614d}</style></head><body><header><div><h1>SALES RETURN</h1><div class="meta">Return: <b>${returned.no}</b><br>Original invoice: <b>${returned.invoice}</b><br>Date: ${returned.date}</div></div><div><h2>AV COMPANY INC</h2><div class="meta">Customer: <b>${returned.customer}</b></div></div></header><table><thead><tr><th>Sl.No</th><th>Item name</th><th>Qty</th><th>Unit</th><th>Discount</th><th>Item price</th><th>VAT</th><th>Total</th></tr></thead><tbody>${rows || '<tr><td colspan="8">No items recorded</td></tr>'}</tbody></table><div class="total"><div>Net return: <b>${money(netTotal)}</b></div><div>VAT: <b>${money(refundVat)}</b></div><div>Refund total: <strong>${money(refundTotal)}</strong></div></div><p style="margin-top:54px">Approved by: __________________________</p><script>window.print();<\/script></body></html>`);
+	popup.document.write(salesDocumentMarkup({ title: 'SALES RETURN / مردودات مبيعات', numberLabel: 'Return', number: returned.no, date: returned.date, customerName: returned.customer, status: `Original invoice ${invoice.no}`, rows, subtotal: netTotal, vat: refundVat, total: refundTotal }));
 	popup.document.close();
-	popup.document.body.innerHTML = popup.document.body.innerHTML.replaceAll('AV COMPANY INC', state.company.name || 'AV COMPANY INC');
 }
 
 document.addEventListener('click', event => { const returnPdf = event.target.closest('.return-pdf'); if (returnPdf) printReturnInvoice(returnPdf.dataset.return); });
@@ -585,6 +584,26 @@ function syncCompanyHeader() {
 	}
 }
 
+
+function salesDocumentMarkup({ title, numberLabel, number, date, customerName, status, rows, subtotal, vat, total, notes = '' }) {
+	const company = state.company || {};
+	const customer = state.customers.find(item => item.name === customerName) || {};
+	const companyName = company.name || 'AV COMPANY INC';
+	const details = values => values.filter(Boolean).join('<br>');
+	const sellerDetails = details([company.address, company.location, company.phone, company.email, company.vat ? `VAT No. ${company.vat}` : '']);
+	const customerDetails = details([customer.address, customer.mobile, customer.vat ? `VAT No. ${customer.vat}` : '']);
+	return `<html><head><title>${number}</title><style>
+		@page{size:A4 landscape;margin:10mm}*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#171717;margin:0;font-size:10px}
+		header{display:flex;justify-content:space-between;gap:20px;border-bottom:1px solid #333;padding-bottom:12px;margin-bottom:14px}
+		h1{font-size:20px;margin:0 0 8px;letter-spacing:.3px}h2{font-size:14px;margin:0 0 5px}.meta{line-height:1.7;color:#333}.parties{display:grid;grid-template-columns:1fr 1fr;gap:24px;margin:12px 0 16px}.party{line-height:1.6}.party-label{font-weight:bold;border-bottom:1px solid #888;padding-bottom:3px;margin-bottom:4px}
+		table{width:100%;border-collapse:collapse;font-size:9px}th{font-weight:bold;text-align:left;border-top:1px solid #333;border-bottom:1px solid #333;padding:5px 3px;vertical-align:bottom;white-space:nowrap}td{border-bottom:1px solid #bbb;padding:6px 3px;vertical-align:top;white-space:nowrap}th:first-child,td:first-child{width:5%;text-align:center}th:nth-child(2){width:25%}th:nth-child(3),th:nth-child(4){width:7%}th:nth-child(n+5){width:11%}.num{text-align:right;white-space:nowrap}.totals{width:250px;margin:12px 0 0 auto;line-height:1.8}.totals div{display:flex;justify-content:space-between;border-bottom:1px solid #ddd;padding:2px 0}.totals .grand{font-weight:bold;font-size:12px;border-top:1px solid #333;border-bottom:1px solid #333;margin-top:3px;padding:4px 0}.notes{border-top:1px solid #999;margin-top:16px;padding-top:8px;line-height:1.6}.signatures{display:flex;justify-content:space-between;margin-top:46px}.signatures span{border-top:1px solid #555;width:38%;padding-top:5px}
+		@media print{body{print-color-adjust:exact;-webkit-print-color-adjust:exact}}
+	</style></head><body><header><div><h1>${title}</h1><div class="meta">${numberLabel}: <b>${number}</b><br>Date: ${date}${status ? `<br>Status: ${status}` : ''}</div></div><div style="text-align:right"><h2>${companyName}</h2><div class="meta">${sellerDetails}</div></div></header>
+		<section class="parties"><div class="party"><div class="party-label">Bill to / العميل</div><b>${customerName || 'Walk-in customer'}</b>${customerDetails ? `<br>${customerDetails}` : ''}</div><div class="party" style="text-align:right"><div class="party-label">Document details / تفاصيل المستند</div>${numberLabel}: <b>${number}</b><br>Date: ${date}</div></section>
+		<table><thead><tr><th>Sl No.</th><th>Item Name</th><th>Qty</th><th>Unit</th><th class="num">Unit Price</th><th class="num">Discount</th><th class="num">Item Price</th><th class="num">VAT</th><th class="num">Total Amount</th></tr></thead><tbody>${rows || '<tr><td colspan="9">No items recorded</td></tr>'}</tbody></table>
+		<div class="totals"><div><span>Subtotal / المجموع</span><b>${money(subtotal)}</b></div><div><span>VAT / الضريبة</span><b>${money(vat)}</b></div><div class="grand"><span>Total / الإجمالي</span><b>${money(total)}</b></div></div>
+		${notes ? `<div class="notes"><b>Notes / ملاحظات</b><br>${notes}</div>` : ''}<div class="signatures"><span>Prepared by</span><span style="text-align:right">Customer signature</span></div><script>window.print();<\/script></body></html>`;
+}
 function syncSettingsAccess() {
 	const settingsButton = document.getElementById('settings-btn');
 	const isAdmin = currentRole() === 'admin';
@@ -858,16 +877,15 @@ function printInvoice(invoiceNumber) {
 	if (!invoice) return;
 	const popup = window.open('', '_blank', 'width=850,height=1000');
 	if (!popup) return;
-	const company = state.company || {};
-	const companyName = company.name || 'AV COMPANY INC';
-	const accent = getComputedStyle(document.documentElement).getPropertyValue('--green').trim() || '#277252';
 	const items = invoice.items?.length ? invoice.items : [{ product: invoice.product || 'Product', quantity: invoice.quantity || 1, price: invoice.total / 1.15 / (invoice.quantity || 1) }];
-	const rows = lineItemTableRows(items);
-	const returnTotal = invoiceReturnTotal(invoice.no);
-	const returnRows = returnTotal ? `<tr class="return-row"><td colspan="7">Sales return</td><td>-${money(returnTotal)}</td></tr>` : '';
+	const rows = items.map((item, index) => { const line = itemLineValues(item); return `<tr><td>${index + 1}</td><td>${item.product || item.name || ''}</td><td class="num">${line.quantity}</td><td>${line.unit}</td><td class="num">${money(line.price)}</td><td class="num">${money(line.discount)}</td><td class="num">${money(line.net)}</td><td class="num">${money(line.vat)}</td><td class="num">${money(line.total)}</td></tr>`; }).join('');
+	const returnedItems = state.returns.filter(item => item.invoice === invoice.no);
+	const returnNet = returnedItems.reduce((sum, item) => sum + returnNetTotal(item), 0);
+	const returnVat = returnedItems.reduce((sum, item) => sum + returnVatTotal(item), 0);
+	const returnRows = returnNet || returnVat ? `<tr><td></td><td>Sales returns</td><td></td><td></td><td></td><td></td><td class="num">-${money(returnNet)}</td><td class="num">-${money(returnVat)}</td><td class="num">-${money(returnNet + returnVat)}</td></tr>` : '';
 	const subtotal = invoice.subtotal == null ? invoice.total / 1.15 : Number(invoice.subtotal);
 	const vat = invoice.total - subtotal;
-	popup.document.write(`<html><head><title>${invoice.no}</title><style>@page{size:A4;margin:0}*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#17211f;padding:42px 34px;max-width:900px;margin:auto}header{display:flex;justify-content:space-between;border-bottom:2px solid ${accent};padding-bottom:18px;margin-bottom:24px}h1{color:${accent};letter-spacing:2px}.meta{line-height:1.8;color:#53625e}table{width:100%;border-collapse:collapse;margin-top:24px;font-size:10px}th{background:${accent};color:white;text-align:left;padding:8px 5px}td{border-bottom:1px solid #dfe7df;padding:8px 5px}.return-row td{color:#b14f43}.totals{margin:20px 0 0 auto;width:270px;line-height:2}.totals strong{font-size:16px;color:${accent}}</style></head><body><header><div><h1>INVOICE</h1><div class="meta">Invoice: <b>${invoice.no}</b><br>Date: ${invoice.date}<br>Status: <b>${invoice.status}</b></div></div><div><h2>${companyName}</h2><div class="meta">Customer: <b>${invoice.customer}</b></div></div></header><table><thead><tr><th>Sl.No</th><th>Item name</th><th>Qty</th><th>Unit</th><th>Discount</th><th>Item price</th><th>VAT</th><th>Total</th></tr></thead><tbody>${rows}${returnRows}</tbody></table><div class="totals"><div>Subtotal: <b>${money(subtotal)}</b></div><div>VAT: <b>${money(vat)}</b></div><div>Net total: <strong>${money(invoice.total)}</strong></div></div><p style="margin-top:48px">Thank you for your business.</p><script>window.print();<\/script></body></html>`);
+	popup.document.write(salesDocumentMarkup({ title: 'TAX INVOICE / فاتورة ضريبية', numberLabel: 'Invoice', number: invoice.no, date: invoice.date, customerName: invoice.customer, status: invoice.status, rows: rows + returnRows, subtotal, vat, total: invoice.total }));
 	popup.document.close();
 }
 
@@ -1005,11 +1023,10 @@ function bindQuotationAction() {
 function printQuotation(quotationNumber) {
 	const quotation = state.quotations.find(item => item.no === quotationNumber);
 	if (!quotation) return;
-	const companyName = state.company.name || 'AV COMPANY INC';
-	const rows = lineItemTableRows(quotation.items || []);
+	const rows = (quotation.items || []).map((item, index) => { const line = itemLineValues(item); return `<tr><td>${index + 1}</td><td>${item.product || item.name || ''}</td><td class="num">${line.quantity}</td><td>${line.unit}</td><td class="num">${money(line.price)}</td><td class="num">${money(line.discount)}</td><td class="num">${money(line.net)}</td><td class="num">${money(line.vat)}</td><td class="num">${money(line.total)}</td></tr>`; }).join('');
 	const popup = window.open('', '_blank', 'width=850,height=1000');
 	if (!popup) return;
-	popup.document.write(`<html><head><title>${quotation.no}</title><style>@page{size:A4;margin:0}*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#17211f;padding:42px 34px;max-width:900px;margin:auto}header{display:flex;justify-content:space-between;border-bottom:2px solid #277252;padding-bottom:18px;margin-bottom:24px}h1{color:#277252;letter-spacing:2px}.meta{line-height:1.8;color:#53625e}table{width:100%;border-collapse:collapse;margin-top:26px;font-size:10px}th{background:#277252;color:white;text-align:left;padding:8px 5px}td{border-bottom:1px solid #dfe7df;padding:8px 5px}.totals{margin:20px 0 0 auto;width:270px;line-height:2}.totals strong{font-size:16px;color:#277252}.notes{margin-top:28px;border-top:1px solid #dfe7df;padding-top:15px;color:#53625e}</style></head><body><header><div><h1>QUOTATION</h1><div class="meta">Quotation: <b>${quotation.no}</b><br>Date: ${quotation.date}<br>Valid until: <b>${quotation.validUntil || '—'}</b><br>Status: <b>${quotation.status}</b></div></div><div><h2>${companyName}</h2><div class="meta">Customer: <b>${quotation.customer}</b></div></div></header><table><thead><tr><th>Sl.No</th><th>Item name</th><th>Qty</th><th>Unit</th><th>Discount</th><th>Item price</th><th>VAT</th><th>Total</th></tr></thead><tbody>${rows || '<tr><td colspan="8">No items recorded</td></tr>'}</tbody></table><div class="totals"><div>Subtotal: <b>${money(quotation.subtotal || 0)}</b></div><div>VAT (15%): <b>${money(quotation.vat || 0)}</b></div><div>Total: <strong>${money(quotation.total || 0)}</strong></div></div>${quotation.notes ? `<div class="notes"><b>Notes</b><br>${quotation.notes}</div>` : ''}<p style="margin-top:48px">Thank you for your business.</p><script>window.print();<\/script></body></html>`);
+	popup.document.write(salesDocumentMarkup({ title: 'QUOTATION / عرض سعر', numberLabel: 'Quotation', number: quotation.no, date: quotation.date, customerName: quotation.customer, status: `Valid until ${quotation.validUntil || '—'} · ${quotation.status}`, rows, subtotal: Number(quotation.subtotal) || 0, vat: Number(quotation.vat) || 0, total: Number(quotation.total) || 0, notes: quotation.notes || '' }));
 	popup.document.close();
 }
 
