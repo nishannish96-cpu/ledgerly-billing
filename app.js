@@ -36,12 +36,14 @@ try {
 } catch {
 	localStorage.removeItem(accountStorageKey);
 }
-const defaultCompany = { name: isNewAccount ? '' : 'AV COMPANY INC', initials: isNewAccount ? '' : 'AV', vat: '', phone: '', email: '', location: '', address: '' };
+const defaultCompany = { name: '', initials: '', vat: '', phone: '', email: '', location: '', address: '' };
 let state = { view: 'overview', quotations: savedState?.quotations || [], invoices: savedState?.invoices || [], products: savedState?.products || [], deliveryNotes: savedState?.deliveryNotes || [], customers: savedState?.customers || [], returns: savedState?.returns || [], inventoryHistory: savedState?.inventoryHistory || [], company: savedState?.company || defaultCompany, credentials: savedState?.credentials || { username: activeUsername, password: '' }, users: savedState?.users || [{ username: activeUsername, password: '', role: sessionStorage.getItem('ledgerly-role') || 'admin' }] };
 let invoiceDraft = null;
 let remoteStateReady = false;
 let localStateDirty = false;
 let serverSyncQueue = Promise.resolve();
+let lastRemoteRevision = 0;
+let remoteRefreshInProgress = false;
 if (resetLocalData) state.company = { name: '', initials: '', vat: '', phone: '', email: '', location: '', address: '' };
 if (isNewAccount) sessionStorage.removeItem('ledgerly-new-account');
 
@@ -89,20 +91,62 @@ function applyAccent(accent) {
 function syncThemeSettings() {
 	const section = document.getElementById('theme-settings');
 	if (!section) return;
-	const isAdmin = sessionStorage.getItem('ledgerly-role') === 'admin' || sessionStorage.getItem('ledgerly-user') === state.credentials.username;
+	const isAdmin = currentRole() === 'admin';
 	section.hidden = false;
 	section.querySelectorAll('.theme-swatch').forEach(swatch => {
 		swatch.disabled = !isAdmin;
 		swatch.classList.toggle('is-selected', swatch.dataset.themeAccent === (document.documentElement.dataset.accent || 'forest'));
 	});
 }
-function stateSnapshot() { return { quotations: state.quotations, invoices: state.invoices, products: state.products, deliveryNotes: state.deliveryNotes, customers: state.customers, returns: state.returns, inventoryHistory: state.inventoryHistory, company: state.company, credentials: state.credentials, users: state.users }; }
+function stateSnapshot() { return { quotations: state.quotations, invoices: state.invoices, products: state.products, deliveryNotes: state.deliveryNotes, customers: state.customers, returns: state.returns, inventoryHistory: state.inventoryHistory, company: state.company, users: state.users.map(user => ({ username: user.username, role: user.role, is_owner: Boolean(user.is_owner) })) }; }
 function hasWorkspaceData(snapshot) { return ['quotations', 'invoices', 'products', 'deliveryNotes', 'customers', 'returns', 'inventoryHistory'].some(key => Array.isArray(snapshot?.[key]) && snapshot[key].length) || Boolean(snapshot?.company?.name); }
 function mergeWorkspaceStates(remoteState, localState) { const merged = { ...remoteState, ...localState }; const keys = { quotations: 'no', invoices: 'no', products: 'id', deliveryNotes: 'no', customers: 'name', returns: 'no', users: 'username' }; Object.entries(keys).forEach(([key, id]) => { const records = new Map(); [...(remoteState?.[key] || []), ...(localState?.[key] || [])].forEach(record => records.set(String(record[id] || JSON.stringify(record)), record)); merged[key] = [...records.values()]; }); const movements = new Map(); [...(remoteState?.inventoryHistory || []), ...(localState?.inventoryHistory || [])].forEach(record => movements.set(JSON.stringify([record.date, record.sku, record.change, record.reason, record.reference]), record)); merged.inventoryHistory = [...movements.values()]; merged.company = Object.fromEntries([...new Set([...Object.keys(remoteState?.company || {}), ...Object.keys(localState?.company || {})])].map(key => [key, localState?.company?.[key] || remoteState?.company?.[key] || ''])); return merged; }
-function syncStateToServer(snapshot) { serverSyncQueue = serverSyncQueue.catch(() => {}).then(async () => { let lastError; for (let attempt = 0; attempt < 3; attempt += 1) { try { const response = await fetch('/api/state', { method: 'POST', keepalive: true, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: activeUsername, state: snapshot }) }); if (!response.ok) throw new Error('Workspace sync failed.'); return; } catch (error) { lastError = error; if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 500 * (2 ** attempt))); } } throw lastError; }); return serverSyncQueue; }
+function syncStateToServer(snapshot) { serverSyncQueue = serverSyncQueue.catch(() => {}).then(async () => { let lastError; for (let attempt = 0; attempt < 3; attempt += 1) { try { const response = await fetch('/api/state', { method: 'POST', keepalive: true, headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sessionStorage.getItem('ledgerly-token') || ''}` }, body: JSON.stringify({ state: snapshot }) }); if (!response.ok) throw new Error('Workspace sync failed.'); const result = await response.json(); lastRemoteRevision = Math.max(lastRemoteRevision, Number(result.revision) || 0); return result; } catch (error) { lastError = error; if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 500 * (2 ** attempt))); } } throw lastError; }); return serverSyncQueue; }
 function saveState() { normalizeDateTimes(); const snapshot = stateSnapshot(); localStateDirty = true; localStorage.setItem(accountStorageKey, JSON.stringify(snapshot)); if (remoteStateReady) syncStateToServer(snapshot).then(() => { if (localStorage.getItem(accountStorageKey) === JSON.stringify(snapshot)) localStateDirty = false; }).catch(() => {}); }
-async function loadRemoteState() { try { const localSnapshot = stateSnapshot(); const response = await fetch(`/api/state?username=${encodeURIComponent(activeUsername)}`); const result = await response.json(); const currentSnapshot = stateSnapshot(); const mergedSnapshot = mergeWorkspaceStates(result.state || {}, currentSnapshot); const changedDuringLoad = localStateDirty || JSON.stringify(currentSnapshot) !== JSON.stringify(localSnapshot); state = { ...state, ...mergedSnapshot }; localStorage.setItem(accountStorageKey, JSON.stringify(stateSnapshot())); if (JSON.stringify(mergedSnapshot) !== JSON.stringify(currentSnapshot)) { render(); syncCompanyHeader(); syncSettingsAccess(); } remoteStateReady = true; if (!result.state || changedDuringLoad || JSON.stringify(mergedSnapshot) !== JSON.stringify(result.state)) { localStateDirty = true; syncStateToServer(mergedSnapshot).then(() => { if (localStorage.getItem(accountStorageKey) === JSON.stringify(mergedSnapshot)) localStateDirty = false; }).catch(() => {}); } else localStateDirty = false; } catch { remoteStateReady = true; } }
+function snapshotForRole(remoteState, localSnapshot) {
+	const role = sessionStorage.getItem('ledgerly-role') || 'cashier';
+	if (role === 'admin') return { ...localSnapshot, ...(remoteState || {}), credentials: localSnapshot.credentials };
+	const merged = { ...localSnapshot, ...(remoteState || {}) };
+	merged.users = [];
+	merged.credentials = { username: activeUsername, password: '' };
+	if (role === 'storekeeper') {
+		['invoices', 'quotations', 'deliveryNotes', 'customers', 'returns'].forEach(key => { merged[key] = []; });
+		merged.inventoryHistory = [];
+	} else {
+		merged.inventoryHistory = [];
+	}
+	return merged;
+}
+async function loadRemoteState() {
+	try {
+		const localSnapshot = stateSnapshot();
+		const response = await fetch('/api/state', { headers: { Authorization: `Bearer ${sessionStorage.getItem('ledgerly-token') || ''}` } });
+		if (response.status === 401) { sessionStorage.clear(); window.location.replace('login.html'); return; }
+		const result = await response.json();
+		if (result.role) sessionStorage.setItem('ledgerly-role', result.role);
+		lastRemoteRevision = Number(result.revision) || 0;
+		const currentSnapshot = stateSnapshot();
+		const changedDuringLoad = localStateDirty || JSON.stringify(currentSnapshot) !== JSON.stringify(localSnapshot);
+		const mergedSnapshot = result.state && changedDuringLoad
+			? mergeWorkspaceStates(result.state, currentSnapshot)
+			: snapshotForRole(result.state, currentSnapshot);
+		state = { ...state, ...mergedSnapshot };
+		localStorage.setItem(accountStorageKey, JSON.stringify(stateSnapshot()));
+		if (JSON.stringify(mergedSnapshot) !== JSON.stringify(currentSnapshot)) { render(); syncCompanyHeader(); syncSettingsAccess(); }
+		remoteStateReady = true;
+		if (!result.state || changedDuringLoad) {
+			localStateDirty = true;
+			syncStateToServer(mergedSnapshot).then(() => {
+				if (localStorage.getItem(accountStorageKey) === JSON.stringify(stateSnapshot())) localStateDirty = false;
+			}).catch(() => {});
+		} else localStateDirty = false;
+		render();
+		syncSettingsAccess();
+	} catch { remoteStateReady = true; }
+}
+async function refreshRemoteState() { if (!remoteStateReady || localStateDirty || remoteRefreshInProgress) return; remoteRefreshInProgress = true; try { const response = await fetch('/api/state', { headers: { Authorization: `Bearer ${sessionStorage.getItem('ledgerly-token') || ''}` } }); if (response.status === 401) { sessionStorage.clear(); window.location.replace('login.html'); return; } if (!response.ok) return; const result = await response.json(); if (Number(result.revision) <= lastRemoteRevision) return; lastRemoteRevision = Number(result.revision) || 0; if (result.role) sessionStorage.setItem('ledgerly-role', result.role); const currentView = state.view; const customerDetail = state.customerDetail; state = { ...state, ...snapshotForRole(result.state, stateSnapshot()), view: currentView, customerDetail }; localStorage.setItem(accountStorageKey, JSON.stringify(stateSnapshot())); render(); syncCompanyHeader(); syncSettingsAccess(); } finally { remoteRefreshInProgress = false; } }
 setInterval(() => { if (remoteStateReady && localStateDirty) syncStateToServer(stateSnapshot()).then(() => { const currentSnapshot = stateSnapshot(); if (localStorage.getItem(accountStorageKey) === JSON.stringify(currentSnapshot)) localStateDirty = false; }).catch(() => {}); }, 5000);
+setInterval(() => refreshRemoteState().catch(() => {}), 1000);
 window.addEventListener('online', () => { if (remoteStateReady && localStateDirty) syncStateToServer(stateSnapshot()).catch(() => {}); });
 function migrateReturnVat() {
 	let changed = false;
@@ -253,8 +297,12 @@ function renderQuotations() {
 	return `<div class="page-heading"><div><div class="eyebrow">Sales preparation</div><h1>Quotations</h1><p>Prepare and track customer quotations before invoicing.</p></div><button class="primary-btn" id="new-quotation-btn">＋ New quotation</button></div><section class="panel"><div class="panel-header"><h2>Quotation history (${state.quotations.length})</h2></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Quotation</th><th>Customer</th><th>Date</th><th>Valid until</th><th>Status</th><th></th></tr></thead><tbody>${rows}</tbody></table></div></section>`;
 }
 
-function render() { const title = { overview:'Overview', quotations:'Quotations', invoices:'Invoices', inventory:'Inventory', delivery:'Delivery notes', returns:'Returns', customers:'Customers', reports:'Reports' }[state.view]; document.getElementById('page-title').textContent = title; document.getElementById('app-content').innerHTML = state.view === 'overview' ? renderOverview() : state.view === 'quotations' ? renderQuotations() : state.view === 'invoices' ? renderInvoices() : state.view === 'inventory' ? renderInventory() + renderInventoryHistory() : state.view === 'delivery' ? renderDeliveryNotes() : state.view === 'returns' ? renderReturns() : state.view === 'customers' ? renderCustomers() : state.view === 'reports' ? renderReports() : renderGeneric(state.view); resetDashboardMetrics(); bindViewActions(); }
-function bindViewActions() { document.querySelectorAll('[data-view-link]').forEach(el => el.addEventListener('click', () => { state.view = el.dataset.viewLink; document.querySelectorAll('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.view === state.view)); render(); })); document.querySelectorAll('.nav-item[data-view]').forEach(el => el.addEventListener('click', () => { state.view = el.dataset.view; document.querySelectorAll('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.view === state.view)); render(); })); document.getElementById('new-invoice-btn').onclick = openModal; document.getElementById('invoice-filter')?.addEventListener('input', event => { const q = event.target.value.toLowerCase(); document.querySelector('#invoice-table tbody').innerHTML = state.invoices.filter(i => `${i.no} ${i.customer}`.toLowerCase().includes(q)).map(inv => `<tr><td><b>${inv.no}</b></td><td><span class="item-name">${inv.customer}</span><span class="item-sub">${inv.date}</span></td><td><span class="status ${statusClass(inv.status)}">${inv.status}</span></td><td>${money(inv.total)} <button class="pdf-invoice" data-invoice="${inv.no}" title="Print or save as PDF" style="color:#08614d;border:1px solid #08614d;border-radius:5px;padding:4px 7px;margin-left:8px;font-size:11px;font-weight:700">PDF</button></td></tr>`).join(''); }); document.getElementById('inventory-filter')?.addEventListener('input', event => { const q = event.target.value.toLowerCase(); document.querySelectorAll('[data-inventory-search]').forEach(item => { item.hidden = !item.dataset.inventorySearch.includes(q); }); }); document.getElementById('returns-filter')?.addEventListener('input', event => { const content = document.querySelector('[data-returns-content]'); if (content) content.hidden = Boolean(event.target.value.trim()); }); }
+const ROLE_VIEWS = { admin: ['overview', 'quotations', 'invoices', 'inventory', 'delivery', 'returns', 'customers', 'reports'], cashier: ['quotations', 'invoices', 'inventory', 'delivery', 'returns'], storekeeper: ['inventory'] };
+function currentRole() { return sessionStorage.getItem('ledgerly-role') || 'cashier'; }
+function canAccessView(view) { return (ROLE_VIEWS[currentRole()] || ROLE_VIEWS.cashier).includes(view); }
+function render() { if (!canAccessView(state.view)) state.view = (ROLE_VIEWS[currentRole()] || ROLE_VIEWS.cashier)[0]; const title = { overview:'Overview', quotations:'Quotations', invoices:'Invoices', inventory:'Inventory', delivery:'Delivery notes', returns:'Returns', customers:'Customers', reports:'Reports' }[state.view]; document.getElementById('page-title').textContent = title; document.getElementById('app-content').innerHTML = state.view === 'overview' ? renderOverview() : state.view === 'quotations' ? renderQuotations() : state.view === 'invoices' ? renderInvoices() : state.view === 'inventory' ? renderInventory() + renderInventoryHistory() : state.view === 'delivery' ? renderDeliveryNotes() : state.view === 'returns' ? renderReturns() : state.view === 'customers' ? renderCustomers() : state.view === 'reports' ? renderReports() : renderGeneric(state.view); resetDashboardMetrics(); bindViewActions(); syncRoleAccess(); }
+function syncRoleAccess() { const role = currentRole(); document.querySelectorAll('.nav-item[data-view]').forEach(item => { item.hidden = !canAccessView(item.dataset.view); }); const createInvoice = document.getElementById('new-invoice-btn'); if (createInvoice) createInvoice.hidden = !['admin', 'cashier'].includes(role); if (role === 'cashier') document.querySelectorAll('.product-meta').forEach(meta => { const quantity = meta.querySelector('.quantity-input'); if (quantity) meta.replaceChildren(Object.assign(document.createElement('span'), { textContent: `${quantity.value} units` })); }); }
+function bindViewActions() { document.querySelectorAll('[data-view-link]').forEach(el => el.addEventListener('click', () => { if (!canAccessView(el.dataset.viewLink)) return; state.view = el.dataset.viewLink; document.querySelectorAll('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.view === state.view)); render(); })); document.querySelectorAll('.nav-item[data-view]').forEach(el => el.addEventListener('click', () => { if (!canAccessView(el.dataset.view)) return; state.view = el.dataset.view; document.querySelectorAll('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.view === state.view)); render(); })); document.getElementById('new-invoice-btn').onclick = () => { if (['admin', 'cashier'].includes(currentRole())) openModal(); }; document.getElementById('invoice-filter')?.addEventListener('input', event => { const q = event.target.value.toLowerCase(); document.querySelector('#invoice-table tbody').innerHTML = state.invoices.filter(i => `${i.no} ${i.customer}`.toLowerCase().includes(q)).map(inv => `<tr><td><b>${inv.no}</b></td><td><span class="item-name">${inv.customer}</span><span class="item-sub">${inv.date}</span></td><td><span class="status ${statusClass(inv.status)}">${inv.status}</span></td><td>${money(inv.total)} <button class="pdf-invoice" data-invoice="${inv.no}" title="Print or save as PDF" style="color:#08614d;border:1px solid #08614d;border-radius:5px;padding:4px 7px;margin-left:8px;font-size:11px;font-weight:700">PDF</button></td></tr>`).join(''); }); document.getElementById('inventory-filter')?.addEventListener('input', event => { const q = event.target.value.toLowerCase(); document.querySelectorAll('[data-inventory-search]').forEach(item => { item.hidden = !item.dataset.inventorySearch.includes(q); }); }); document.getElementById('returns-filter')?.addEventListener('input', event => { const content = document.querySelector('[data-returns-content]'); if (content) content.hidden = Boolean(event.target.value.trim()); }); }
 function invoiceItemMarkup(item = null) { const firstProduct = state.products.find(product => product.id === item?.productId) || state.products[0]; const selectedId = firstProduct?.id || ''; const quantity = item?.quantity || 1; const price = item?.price ?? firstProduct?.price ?? 0; return `<div class="invoice-item" style="display:grid;grid-template-columns:minmax(0,2fr) .7fr 1fr auto;gap:12px;align-items:end;border-bottom:1px solid #e7ebe7;padding-bottom:10px;margin-bottom:10px"><label>Product<select class="invoice-product">${state.products.map(p => `<option value="${p.id}"${p.id === selectedId ? ' selected' : ''}>${p.name}</option>`).join('')}</select></label><label>Qty<input class="invoice-quantity" type="number" min="1" value="${quantity}" /></label><div><small style="display:block;color:#78817e;margin-bottom:7px">Amount</small><b class="invoice-line-amount">${money(price * quantity)}</b></div><button type="button" class="remove-invoice-item" title="Remove item" style="color:#b14f43;border:1px solid #e2b8b0;border-radius:5px;padding:7px 9px">×</button></div>`; }
 function bindInvoiceItems() { document.querySelectorAll('.invoice-product,.invoice-quantity').forEach(input => input.addEventListener('input', updateModalTotal)); }
 function renderInvoiceItems(items = null) { const container = document.getElementById('invoice-items'); container.innerHTML = state.products.length ? (items?.length ? items.map(item => invoiceItemMarkup(item)).join('') : invoiceItemMarkup()) : '<p class="modal-copy">Add inventory before creating an invoice.</p>'; bindInvoiceItems(); }
@@ -353,17 +401,14 @@ function syncCompanyHeader() {
 
 function syncSettingsAccess() {
 	const settingsButton = document.getElementById('settings-btn');
-	const isLegacyAdmin = sessionStorage.getItem('ledgerly-user') === state.credentials.username;
-	const isAdmin = sessionStorage.getItem('ledgerly-role') === 'admin' || isLegacyAdmin;
-	if (isLegacyAdmin && sessionStorage.getItem('ledgerly-role') !== 'admin') sessionStorage.setItem('ledgerly-role', 'admin');
+	const isAdmin = currentRole() === 'admin';
 	if (settingsButton) settingsButton.hidden = !isAdmin;
 	const currentUser = sessionStorage.getItem('ledgerly-user') || state.credentials.username;
-	const currentRole = isAdmin ? 'Administrator' : 'User';
 	const userName = document.getElementById('current-user-name');
 	const userRole = document.getElementById('current-user-role');
 	const userInitials = document.getElementById('current-user-initials');
 	if (userName) userName.textContent = currentUser;
-	if (userRole) userRole.textContent = currentRole;
+	if (userRole) userRole.textContent = currentRole().replace(/^./, letter => letter.toUpperCase());
 	if (userInitials) userInitials.textContent = currentUser.slice(0, 2).toUpperCase();
 }
 
@@ -409,7 +454,7 @@ function openCompanyProfile(showCompany = false) {
 	const accountUsernameLabel = document.getElementById('account-username').closest('label');
 	const userManagement = document.getElementById('user-management');
 	const accountDetails = document.getElementById('account-username').closest('details');
-	const isAdmin = sessionStorage.getItem('ledgerly-role') === 'admin' || sessionStorage.getItem('ledgerly-user') === state.credentials.username;
+	const isAdmin = currentRole() === 'admin';
 	const canEditCompany = showCompany && isAdmin;
 	const logoutButton = document.getElementById('logout-btn');
 	const saveProfileButton = document.querySelector('#company-form .primary-btn.full');
@@ -515,40 +560,63 @@ function openCompanyProfile(showCompany = false) {
 function renderUserList() {
 	const management = document.getElementById('user-management');
 	if (!management) return;
-	const isAdmin = sessionStorage.getItem('ledgerly-role') === 'admin';
+	const isAdmin = currentRole() === 'admin';
 	management.hidden = !isAdmin;
 	if (!isAdmin) return;
-	document.getElementById('user-list').innerHTML = state.users.map(user => `<div style="display:flex;justify-content:space-between;align-items:center;padding:9px 10px;border:1px solid #d9e4de;border-radius:6px"><span><b>${user.username}</b><small style="display:block;color:#78817e;text-transform:capitalize">${user.role}</small></span></div>`).join('');
+	const list = document.getElementById('user-list');
+	list.innerHTML = state.users.map(user => { const isOwner = user.is_owner || user.username === state.credentials.username; return `<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:9px 10px;border:1px solid #d9e4de;border-radius:6px"><span><b>${user.username}</b>${isOwner ? '<small style="display:block;color:#78817e">Company owner</small>' : ''}</span><select class="user-role-select" data-username="${user.username}" aria-label="Role for ${user.username}"${isOwner ? ' disabled' : ''}><option value="admin"${user.role === 'admin' ? ' selected' : ''}>Admin</option><option value="cashier"${user.role === 'cashier' ? ' selected' : ''}>Cashier</option><option value="storekeeper"${user.role === 'storekeeper' ? ' selected' : ''}>Storekeeper</option></select></div>`; }).join('');
+	list.querySelectorAll('.user-role-select').forEach(select => select.addEventListener('change', async () => {
+		const companyPassword = window.prompt('Confirm your company administrator password to change this role.');
+		if (companyPassword === null) { renderUserList(); return; }
+		try {
+			const response = await fetch('/api/update-user-role', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ admin_username: activeUsername, username: select.dataset.username, role: select.value, company_password: companyPassword }) });
+			const result = await response.json();
+			if (!response.ok) throw new Error(result.error || 'Unable to update the user role.');
+			const user = state.users.find(item => item.username === result.user.username);
+			if (user) user.role = result.user.role;
+			if (result.user.username === activeUsername) sessionStorage.setItem('ledgerly-role', result.user.role);
+			saveState();
+			renderUserList();
+			render();
+		} catch (error) {
+			window.alert(error.message);
+			renderUserList();
+		}
+	}));
 }
 
 document.getElementById('settings-btn').addEventListener('click', openCompanyProfile);
 document.getElementById('theme-settings')?.addEventListener('click', event => {
 	const swatch = event.target.closest('.theme-swatch');
-	const isAdmin = sessionStorage.getItem('ledgerly-role') === 'admin' || sessionStorage.getItem('ledgerly-user') === state.credentials.username;
+	const isAdmin = currentRole() === 'admin';
 	if (swatch && isAdmin) applyAccent(swatch.dataset.themeAccent);
 });
 document.getElementById('workspace-profile')?.addEventListener('click', () => {
-	openCompanyProfile(true);
+	if (currentRole() === 'admin') openCompanyProfile(true);
 });
 document.getElementById('workspace-profile')?.addEventListener('keydown', event => {
 	if (event.key !== 'Enter' && event.key !== ' ') return;
 	event.preventDefault();
 	document.getElementById('workspace-profile').click();
 });
-document.getElementById('logout-btn').addEventListener('click', () => { sessionStorage.removeItem('ledgerly-auth'); sessionStorage.removeItem('ledgerly-user'); sessionStorage.removeItem('ledgerly-role'); window.location.href = 'login.html'; });
+document.getElementById('logout-btn').addEventListener('click', () => { sessionStorage.removeItem('ledgerly-auth'); sessionStorage.removeItem('ledgerly-token'); sessionStorage.removeItem('ledgerly-user'); sessionStorage.removeItem('ledgerly-role'); window.location.href = 'login.html'; });
 document.getElementById('add-user-btn').addEventListener('click', async () => {
-	const isAdmin = sessionStorage.getItem('ledgerly-role') === 'admin' || sessionStorage.getItem('ledgerly-user') === state.credentials.username;
+	const isAdmin = currentRole() === 'admin';
 	if (!isAdmin) return;
 	const username = document.getElementById('new-user-username').value.trim().toLowerCase();
 	const password = document.getElementById('new-user-password').value;
 	const message = document.getElementById('user-message');
 	if (!username || !password) { message.textContent = 'Enter both a username and password.'; message.hidden = false; return; }
 	if (state.users.some(user => user.username.toLowerCase() === username.toLowerCase())) { message.textContent = 'That username already exists.'; message.hidden = false; return; }
+	const companyPassword = window.prompt('Confirm your company administrator password to add this user.');
+	if (companyPassword === null) return;
+	if (!companyPassword) { message.textContent = 'Company administrator password is required.'; message.hidden = false; return; }
 	try {
-		const response = await fetch('/api/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username, password }) });
+		const role = document.getElementById('new-user-role').value;
+		const response = await fetch('/api/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username, password, role, company_username: activeUsername, company_password: companyPassword }) });
 		const result = await response.json();
 		if (!response.ok) throw new Error(result.error || 'Unable to create the user.');
-		state.users.push({ username: result.user.username, password, role: result.user.role });
+		state.users.push({ ...result.user, password });
 		saveState();
 	} catch (error) {
 		message.textContent = error.message;
@@ -574,7 +642,7 @@ document.getElementById('company-form').addEventListener('submit', async event =
 	if (accountEditing) {
 		if (updatedPassword !== confirmedPassword) { window.alert('Passwords do not match.'); return; }
 		try {
-			const response = await fetch('/api/update-user', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ current_username: sessionStorage.getItem('ledgerly-user'), username: updatedUsername, password: updatedPassword }) });
+			const response = await fetch('/api/update-user', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sessionStorage.getItem('ledgerly-token') || ''}` }, body: JSON.stringify({ current_username: sessionStorage.getItem('ledgerly-user'), username: updatedUsername, password: updatedPassword }) });
 			const result = await response.json();
 			if (!response.ok) throw new Error(result.error || 'Unable to update the account.');
 			state.credentials = { username: result.user.username, password: updatedPassword };

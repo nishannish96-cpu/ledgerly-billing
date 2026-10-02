@@ -115,6 +115,7 @@
       try {
         const user = await requestAccount('/api/login', email, password);
         sessionStorage.setItem('ledgerly-auth', 'true');
+        sessionStorage.setItem('ledgerly-token', user.token);
         sessionStorage.setItem('ledgerly-user', user.username);
         sessionStorage.setItem('ledgerly-role', user.role);
         sessionStorage.setItem('ledgerly-first-name', user.first_name || '');
