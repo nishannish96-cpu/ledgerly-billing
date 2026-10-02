@@ -1,5 +1,6 @@
 const activeUsername = (sessionStorage.getItem('ledgerly-user') || 'admin@ledgerly.local').trim().toLowerCase();
 const accountStorageKey = `ledgerly-state:${activeUsername}`;
+const pendingSyncKey = `${accountStorageKey}:pending-sync`;
 const isNewAccount = sessionStorage.getItem('ledgerly-new-account') === activeUsername;
 if (new URLSearchParams(window.location.search).has('clear-data')) {
 	localStorage.removeItem(accountStorageKey);
@@ -102,7 +103,8 @@ function stateSnapshot() { return { quotations: state.quotations, invoices: stat
 function hasWorkspaceData(snapshot) { return ['quotations', 'invoices', 'products', 'deliveryNotes', 'customers', 'returns', 'inventoryHistory'].some(key => Array.isArray(snapshot?.[key]) && snapshot[key].length) || Boolean(snapshot?.company?.name); }
 function mergeWorkspaceStates(remoteState, localState) { const merged = { ...remoteState, ...localState }; const keys = { quotations: 'no', invoices: 'no', products: 'id', deliveryNotes: 'no', customers: 'name', returns: 'no', users: 'username' }; Object.entries(keys).forEach(([key, id]) => { const records = new Map(); [...(remoteState?.[key] || []), ...(localState?.[key] || [])].forEach(record => records.set(String(record[id] || JSON.stringify(record)), record)); merged[key] = [...records.values()]; }); const movements = new Map(); [...(remoteState?.inventoryHistory || []), ...(localState?.inventoryHistory || [])].forEach(record => movements.set(JSON.stringify([record.date, record.sku, record.change, record.reason, record.reference]), record)); merged.inventoryHistory = [...movements.values()]; merged.company = Object.fromEntries([...new Set([...Object.keys(remoteState?.company || {}), ...Object.keys(localState?.company || {})])].map(key => [key, localState?.company?.[key] || remoteState?.company?.[key] || ''])); return merged; }
 function syncStateToServer(snapshot) { serverSyncQueue = serverSyncQueue.catch(() => {}).then(async () => { let lastError; for (let attempt = 0; attempt < 3; attempt += 1) { try { const response = await fetch('/api/state', { method: 'POST', keepalive: true, headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sessionStorage.getItem('ledgerly-token') || ''}` }, body: JSON.stringify({ state: snapshot }) }); if (!response.ok) throw new Error('Workspace sync failed.'); const result = await response.json(); lastRemoteRevision = Math.max(lastRemoteRevision, Number(result.revision) || 0); return result; } catch (error) { lastError = error; if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 500 * (2 ** attempt))); } } throw lastError; }); return serverSyncQueue; }
-function saveState() { normalizeDateTimes(); const snapshot = stateSnapshot(); localStateDirty = true; localStorage.setItem(accountStorageKey, JSON.stringify(snapshot)); if (remoteStateReady) syncStateToServer(snapshot).then(() => { if (localStorage.getItem(accountStorageKey) === JSON.stringify(snapshot)) localStateDirty = false; }).catch(() => {}); }
+function markStateSynced(snapshot) { if (localStorage.getItem(accountStorageKey) !== JSON.stringify(snapshot)) return; localStateDirty = false; localStorage.removeItem(pendingSyncKey); }
+function saveState() { normalizeDateTimes(); const snapshot = stateSnapshot(); localStateDirty = true; localStorage.setItem(accountStorageKey, JSON.stringify(snapshot)); localStorage.setItem(pendingSyncKey, 'true'); if (!remoteStateReady) return Promise.resolve(false); const syncRequest = syncStateToServer(snapshot); syncRequest.then(() => markStateSynced(snapshot)).catch(() => {}); return syncRequest; }
 function snapshotForRole(remoteState, localSnapshot) {
 	const role = sessionStorage.getItem('ledgerly-role') || 'cashier';
 	if (role === 'admin') return { ...localSnapshot, ...(remoteState || {}), credentials: localSnapshot.credentials };
@@ -126,7 +128,7 @@ async function loadRemoteState() {
 		if (result.role) sessionStorage.setItem('ledgerly-role', result.role);
 		lastRemoteRevision = Number(result.revision) || 0;
 		const currentSnapshot = stateSnapshot();
-		const changedDuringLoad = localStateDirty || JSON.stringify(currentSnapshot) !== JSON.stringify(localSnapshot);
+		const changedDuringLoad = localStateDirty || localStorage.getItem(pendingSyncKey) === 'true' || JSON.stringify(currentSnapshot) !== JSON.stringify(localSnapshot);
 		const mergedSnapshot = result.state && changedDuringLoad
 			? mergeWorkspaceStates(result.state, currentSnapshot)
 			: snapshotForRole(result.state, currentSnapshot);
@@ -136,18 +138,16 @@ async function loadRemoteState() {
 		remoteStateReady = true;
 		if (!result.state || changedDuringLoad) {
 			localStateDirty = true;
-			syncStateToServer(mergedSnapshot).then(() => {
-				if (localStorage.getItem(accountStorageKey) === JSON.stringify(stateSnapshot())) localStateDirty = false;
-			}).catch(() => {});
+			syncStateToServer(mergedSnapshot).then(() => markStateSynced(mergedSnapshot)).catch(() => {});
 		} else localStateDirty = false;
 		render();
 		syncSettingsAccess();
 	} catch { remoteStateReady = true; }
 }
 async function refreshRemoteState() { if (!remoteStateReady || localStateDirty || remoteRefreshInProgress) return; remoteRefreshInProgress = true; try { const response = await fetch('/api/state', { headers: { Authorization: `Bearer ${sessionStorage.getItem('ledgerly-token') || ''}` } }); if (response.status === 401) { sessionStorage.clear(); window.location.replace('login.html'); return; } if (!response.ok) return; const result = await response.json(); if (Number(result.revision) <= lastRemoteRevision) return; lastRemoteRevision = Number(result.revision) || 0; if (result.role) sessionStorage.setItem('ledgerly-role', result.role); const currentView = state.view; const customerDetail = state.customerDetail; state = { ...state, ...snapshotForRole(result.state, stateSnapshot()), view: currentView, customerDetail }; localStorage.setItem(accountStorageKey, JSON.stringify(stateSnapshot())); render(); syncCompanyHeader(); syncSettingsAccess(); } finally { remoteRefreshInProgress = false; } }
-setInterval(() => { if (remoteStateReady && localStateDirty) syncStateToServer(stateSnapshot()).then(() => { const currentSnapshot = stateSnapshot(); if (localStorage.getItem(accountStorageKey) === JSON.stringify(currentSnapshot)) localStateDirty = false; }).catch(() => {}); }, 5000);
+setInterval(() => { if (remoteStateReady && (localStateDirty || localStorage.getItem(pendingSyncKey) === 'true')) { const snapshot = stateSnapshot(); syncStateToServer(snapshot).then(() => markStateSynced(snapshot)).catch(() => {}); } }, 5000);
 setInterval(() => refreshRemoteState().catch(() => {}), 1000);
-window.addEventListener('online', () => { if (remoteStateReady && localStateDirty) syncStateToServer(stateSnapshot()).catch(() => {}); });
+window.addEventListener('online', () => { if (remoteStateReady && (localStateDirty || localStorage.getItem(pendingSyncKey) === 'true')) { const snapshot = stateSnapshot(); syncStateToServer(snapshot).then(() => markStateSynced(snapshot)).catch(() => {}); } });
 function migrateReturnVat() {
 	let changed = false;
 	state.returns.forEach(returned => {
@@ -654,7 +654,11 @@ document.getElementById('company-form').addEventListener('submit', async event =
 	}
 	const adminUser = state.users.find(user => user.role === 'admin');
 	if (adminUser) { adminUser.username = state.credentials.username; adminUser.password = state.credentials.password; }
-	saveState();
+	const saveRequest = saveState();
+	if (remoteStateReady) {
+		try { await saveRequest; }
+		catch (error) { window.alert(`Company details are saved on this device but not synced: ${error.message}`); return; }
+	}
 	syncCompanyHeader();
 	if (state.view === 'overview') render();
 	syncCompanyHeader();
