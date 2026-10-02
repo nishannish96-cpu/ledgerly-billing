@@ -102,6 +102,19 @@
       </form>
     </section>
   </div>
+  <div class="modal-backdrop" id="invoice-payment-modal-backdrop" hidden>
+    <section class="modal" role="dialog" aria-modal="true" aria-labelledby="invoice-payment-title">
+      <button class="modal-close" id="invoice-payment-close" type="button" aria-label="Close payment form">×</button>
+      <div class="modal-kicker">Accounts receivable</div><h2 id="invoice-payment-title">Record invoice payment</h2>
+      <p class="modal-copy" id="invoice-payment-customer"></p>
+      <form id="invoice-payment-form">
+        <div class="form-grid"><label>Invoice number<input id="payment-invoice-number" readonly /></label><label>Balance due<input id="payment-balance-due" readonly /></label></div>
+        <label>Amount received<input id="payment-amount" type="number" min="0.01" step="0.01" required /></label>
+        <div class="form-grid"><label>Payment method<select id="invoice-payment-method"><option>Cash</option><option>Online</option><option>Bank transfer</option></select></label><label>Reference<input id="payment-reference" placeholder="Optional receipt or reference" /></label></div>
+        <button class="primary-btn full" type="submit">Save payment <span>→</span></button>
+      </form>
+    </section>
+  </div>
   <div class="modal-backdrop" id="inventory-modal-backdrop" hidden>
     <section class="modal" role="dialog" aria-modal="true" aria-labelledby="inventory-modal-title">
       <button class="modal-close" id="inventory-modal-close">×</button>
@@ -139,6 +152,6 @@
     </section>
   </div>
   <script>if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js?v=64');</script>
-  <script src="app.js?v=136"></script>
+  <script src="app.js?v=137"></script>
 </body>
 </html>
