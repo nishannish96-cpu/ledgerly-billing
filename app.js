@@ -39,7 +39,7 @@ try {
 }
 const defaultCompany = { name: '', initials: '', vat: '', phone: '', email: '', location: '', address: '' };
 let state = { view: 'overview', quotations: savedState?.quotations || [], invoices: savedState?.invoices || [], products: savedState?.products || [], deliveryNotes: savedState?.deliveryNotes || [], customers: savedState?.customers || [], returns: savedState?.returns || [], inventoryHistory: savedState?.inventoryHistory || [], company: savedState?.company || defaultCompany, credentials: savedState?.credentials || { username: activeUsername, password: '' }, users: savedState?.users || [{ username: activeUsername, password: '', role: sessionStorage.getItem('ledgerly-role') || 'admin' }] };
-function normalizeWorkspaceUsers() { state.users = (Array.isArray(state.users) ? state.users : []).filter(user => user && typeof user.username === 'string'); }
+function normalizeWorkspaceUsers() { state.users = (Array.isArray(state.users) ? state.users : []).filter(user => user && typeof user.username === 'string'); if (!state.credentials || typeof state.credentials !== 'object') state.credentials = { username: activeUsername, password: '' }; }
 normalizeWorkspaceUsers();
 let invoiceDraft = null;
 let remoteStateReady = false;
