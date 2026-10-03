@@ -200,7 +200,7 @@
 		const topActions = document.querySelector('.top-actions');
 		if (topActions) {
 			button.classList.add('icon-btn');
-			button.style.cssText = 'width:auto;padding:0 12px;font-weight:700';
+			button.style.cssText = 'width:auto;padding:0 12px;font-weight:700;font-size:13px;color:#08614d;font-family:inherit';
 			topActions.insertBefore(button, topActions.firstChild);
 		} else {
 			button.style.cssText = 'position:fixed;top:12px;inset-inline-end:12px;z-index:50;border:1px solid #21745f;border-radius:6px;padding:6px 12px;background:#fff;color:#08614d;font-weight:700;cursor:pointer';
