@@ -411,13 +411,93 @@ function renderReturns() {
 	return `<div class="page-heading"><div><div class="eyebrow">Sales returns</div><h1>Returns</h1><p>Choose invoice items and adjust the returned quantity before recording a return.</p></div></div>${invoiceSections || '<section class="panel"><div class="empty-state"><h3>No invoices available</h3><p>Create an invoice before recording a sales return.</p></div></section>'}<section class="panel" style="margin-top:24px"><div class="panel-header"><h2>Return history (${state.returns.length})</h2></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Return</th><th>Invoice</th><th>Customer</th><th>Date</th><th>Net return</th><th>VAT (15%)</th><th>Refund total</th><th></th></tr></thead><tbody>${historyRows}</tbody></table></div></section>`;
 }
 
+function parseDocDate(value) {
+	const time = Date.parse(value);
+	return Number.isNaN(time) ? null : new Date(time);
+}
+function zatcaTlv(fields) {
+	const bytes = [];
+	fields.forEach((value, index) => {
+		const encoded = new TextEncoder().encode(String(value));
+		bytes.push(index + 1, encoded.length, ...encoded);
+	});
+	let binary = '';
+	bytes.forEach(byte => { binary += String.fromCharCode(byte); });
+	return btoa(binary);
+}
+function zatcaQrSvg({ date, total, vat }) {
+	if (typeof qrcode !== 'function') return '';
+	const company = state.company || {};
+	const stamp = (parseDocDate(date) || new Date()).toISOString().replace(/\.\d{3}Z$/, 'Z');
+	const payload = zatcaTlv([company.name || '', company.vat || '', stamp, (Number(total) || 0).toFixed(2), (Number(vat) || 0).toFixed(2)]);
+	const qr = qrcode(0, 'M');
+	qr.addData(payload, 'Byte');
+	qr.make();
+	return qr.createSvgTag(3, 2);
+}
+const vatReportRange = { from: '', to: '' };
+function vatReportData() {
+	const from = vatReportRange.from ? new Date(`${vatReportRange.from}T00:00:00`) : null;
+	const to = vatReportRange.to ? new Date(`${vatReportRange.to}T23:59:59`) : null;
+	const inRange = value => { const date = parseDocDate(value); return !(from || to) || (date && (!from || date >= from) && (!to || date <= to)); };
+	const sales = state.invoices.filter(invoice => inRange(invoice.date)).map(invoice => {
+		const returned = state.returns.filter(item => item.invoice === invoice.no);
+		let net; let vat;
+		if (invoice.items?.length) {
+			net = invoice.items.reduce((sum, item) => sum + itemLineValues(item).net, 0);
+			vat = invoice.items.reduce((sum, item) => sum + itemLineValues(item).vat, 0);
+		} else {
+			net = (Number(invoice.total) || 0) / 1.15 + returned.reduce((sum, item) => sum + returnNetTotal(item), 0);
+			vat = net * 0.15;
+		}
+		return { no: invoice.no, date: invoice.date, customer: invoice.customer, net, vat };
+	});
+	const returns = state.returns.filter(item => inRange(item.date)).map(item => ({ no: item.no, date: item.date, customer: item.customer, net: returnNetTotal(item), vat: returnVatTotal(item) }));
+	const sum = (rows, key) => rows.reduce((total, row) => total + row[key], 0);
+	return { sales, returns, salesNet: sum(sales, 'net'), salesVat: sum(sales, 'vat'), returnNet: sum(returns, 'net'), returnVat: sum(returns, 'vat') };
+}
+function vatReportMarkup() {
+	const data = vatReportData();
+	const row = (type, entry, sign) => `<tr><td>${type}</td><td><b>${entry.no}</b></td><td>${entry.date}</td><td>${entry.customer || 'Walk-in customer'}</td><td class="num">${sign}${money(entry.net)}</td><td class="num">${sign}${money(entry.vat)}</td></tr>`;
+	const rows = [...data.sales.map(entry => row('Invoice', entry, '')), ...data.returns.map(entry => row('Return', entry, '-'))].join('');
+	const netVat = data.salesVat - data.returnVat;
+	return `<section class="panel" style="margin-top:24px" id="vat-report"><div class="panel-header"><h2>VAT report (15%)</h2><span style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><label>From <input type="date" id="vat-from" value="${vatReportRange.from}"></label><label>To <input type="date" id="vat-to" value="${vatReportRange.to}"></label><button type="button" id="vat-csv" style="color:#08614d;border:1px solid #08614d;border-radius:5px;padding:4px 8px;font-weight:700">Export CSV</button><button type="button" id="vat-print" style="color:#08614d;border:1px solid #08614d;border-radius:5px;padding:4px 8px;font-weight:700">Print</button></span></div><section class="stats-grid report-stats"><article class="stat-card"><span class="stat-label">Taxable sales</span><strong class="stat-value">${money(data.salesNet - data.returnNet)}</strong><span class="stat-note">After returns</span></article><article class="stat-card"><span class="stat-label">Output VAT</span><strong class="stat-value">${money(data.salesVat)}</strong><span class="stat-note">${data.sales.length} invoices</span></article><article class="stat-card"><span class="stat-label">VAT on returns</span><strong class="stat-value">${money(data.returnVat)}</strong><span class="stat-note">${data.returns.length} returns</span></article><article class="stat-card"><span class="stat-label">Net VAT payable</span><strong class="stat-value">${money(netVat)}</strong><span class="stat-note">Output VAT less returns</span></article></section><div class="table-wrap"><table class="data-table"><thead><tr><th>Type</th><th>Number</th><th>Date</th><th>Customer</th><th>Net amount</th><th>VAT</th></tr></thead><tbody>${rows || '<tr><td colspan="6">No transactions in this period.</td></tr>'}</tbody></table></div></section>`;
+}
+document.addEventListener('change', event => {
+	if (!event.target.matches('#vat-from, #vat-to')) return;
+	vatReportRange.from = document.getElementById('vat-from').value;
+	vatReportRange.to = document.getElementById('vat-to').value;
+	render();
+});
+document.addEventListener('click', event => {
+	if (event.target.closest('#vat-csv')) {
+		const data = vatReportData();
+		const cell = value => `"${String(value ?? '').replace(/"/g, '""')}"`;
+		const lines = [['Type', 'Number', 'Date', 'Customer', 'Net amount', 'VAT'].map(cell).join(',')];
+		data.sales.forEach(entry => lines.push(['Invoice', entry.no, entry.date, entry.customer, entry.net.toFixed(2), entry.vat.toFixed(2)].map(cell).join(',')));
+		data.returns.forEach(entry => lines.push(['Return', entry.no, entry.date, entry.customer, (-entry.net).toFixed(2), (-entry.vat).toFixed(2)].map(cell).join(',')));
+		lines.push(['', '', '', 'Net VAT payable', '', (data.salesVat - data.returnVat).toFixed(2)].map(cell).join(','));
+		const link = document.createElement('a');
+		link.href = URL.createObjectURL(new Blob(['\ufeff' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' }));
+		link.download = `vat-report-${vatReportRange.from || 'all'}-${vatReportRange.to || 'all'}.csv`;
+		link.click();
+		URL.revokeObjectURL(link.href);
+	}
+	if (event.target.closest('#vat-print')) {
+		const popup = window.open('', '_blank', 'width=900,height=1000');
+		if (!popup) return;
+		popup.document.write(`<html><head><title>VAT report</title><style>body{font-family:Arial,sans-serif;font-size:12px;padding:20px}table{width:100%;border-collapse:collapse}th,td{border-bottom:1px solid #ccc;padding:5px;text-align:left}.num{text-align:right}.stat-card{display:inline-block;margin:6px 16px 6px 0}.stat-value{display:block;font-size:16px}label,button{display:none}</style></head><body><h2>${state.company.name || ''} — VAT report</h2><p>VAT No. ${state.company.vat || '—'} · Period: ${vatReportRange.from || 'start'} to ${vatReportRange.to || 'today'}</p>${document.getElementById('vat-report').innerHTML}<script>window.print();<\/script></body></html>`);
+		popup.document.close();
+	}
+});
+
 function renderReports() {
 	const totalSales = state.invoices.reduce((sum, invoice) => sum + (Number(invoice.total) || 0), 0);
 	const stockIntake = state.inventoryHistory.filter(entry => entry.change > 0).reduce((sum, entry) => sum + entry.change, 0);
 	const stockOuttake = Math.abs(state.inventoryHistory.filter(entry => entry.change < 0).reduce((sum, entry) => sum + entry.change, 0));
 	const totalReturns = state.returns.reduce((sum, returned) => sum + (Number(returned.refundTotal) || returnNetTotal(returned) * 1.15), 0);
 	const movementRows = state.inventoryHistory.map(entry => `<tr><td>${entry.date}</td><td><b>${entry.product}</b></td><td style="color:${entry.change >= 0 ? 'var(--green)' : '#b14f43'};font-weight:700">${entry.change >= 0 ? 'Intake +' : 'Outtake '}${Math.abs(entry.change)}</td><td>${entry.reason}</td><td>${entry.reference || '—'}</td></tr>`).join('');
-	return `<div class="page-heading"><div><div class="eyebrow">Business intelligence</div><h1>Reports</h1><p>Track sales, stock movement, and customer returns.</p></div></div><section class="stats-grid report-stats"><article class="stat-card"><span class="stat-label">1. Total sales</span><strong class="stat-value">${money(totalSales)}</strong><span class="stat-note">${state.invoices.length} invoices</span></article><article class="stat-card"><span class="stat-label">2. Stock intake</span><strong class="stat-value">${stockIntake}</strong><span class="stat-note">Units received</span></article><article class="stat-card"><span class="stat-label">2. Stock outtake</span><strong class="stat-value">${stockOuttake}</strong><span class="stat-note">Units sold or removed</span></article><article class="stat-card"><span class="stat-label">3. Total return</span><strong class="stat-value">${money(totalReturns)}</strong><span class="stat-note">${state.returns.length} return records</span></article></section><section class="panel report-movement"><div class="panel-header"><h2>Stock intake and outtake</h2></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Date</th><th>Item</th><th>Movement</th><th>Reason</th><th>Reference</th></tr></thead><tbody>${movementRows || '<tr><td colspan="5">No stock movement recorded yet.</td></tr>'}</tbody></table></div></section>`;
+	return `<div class="page-heading"><div><div class="eyebrow">Business intelligence</div><h1>Reports</h1><p>Track sales, stock movement, and customer returns.</p></div></div><section class="stats-grid report-stats"><article class="stat-card"><span class="stat-label">1. Total sales</span><strong class="stat-value">${money(totalSales)}</strong><span class="stat-note">${state.invoices.length} invoices</span></article><article class="stat-card"><span class="stat-label">2. Stock intake</span><strong class="stat-value">${stockIntake}</strong><span class="stat-note">Units received</span></article><article class="stat-card"><span class="stat-label">2. Stock outtake</span><strong class="stat-value">${stockOuttake}</strong><span class="stat-note">Units sold or removed</span></article><article class="stat-card"><span class="stat-label">3. Total return</span><strong class="stat-value">${money(totalReturns)}</strong><span class="stat-note">${state.returns.length} return records</span></article></section><section class="panel report-movement"><div class="panel-header"><h2>Stock intake and outtake</h2></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Date</th><th>Item</th><th>Movement</th><th>Reason</th><th>Reference</th></tr></thead><tbody>${movementRows || '<tr><td colspan="5">No stock movement recorded yet.</td></tr>'}</tbody></table></div></section>${vatReportMarkup()}`;
 }
 
 function renderGeneric(view) { const config = { quotations: ['Quotations', 'Prepare and track customer quotations before invoicing.', '＋ New quotation'], delivery: ['Delivery notes', 'Dispatch orders with proof of handover.', '＋ New delivery note'], returns: ['Returns & stock returns', 'Track customer returns and put good stock back where it belongs.', '＋ Record return'], customers: ['Customers', 'Your customer directory and account balances live here.', '＋ Add customer'], reports: ['Reports', 'Sales, VAT, stock movement, and return reporting.', 'Export report'] }[view]; const search = view === 'returns' ? '<input class="filter-input" id="returns-filter" placeholder="⌕ Search returns" />' : ''; return `<div class="page-heading"><div><div class="eyebrow">Operations</div><h1>${config[0]}</h1><p>${config[1]}</p></div><button class="primary-btn">${config[2]}</button></div><section class="panel"><div class="panel-header"><h2>${view === 'returns' ? 'Returns' : view === 'quotations' ? 'Quotations' : 'Workspace'}</h2>${search}</div><div class="empty-state" data-returns-content><div class="stat-icon bg-mint" style="position:static;margin:0 auto 16px;font-size:22px">${view === 'returns' ? '↩' : view === 'delivery' ? '⌁' : '◈'}</div><h3>${view === 'returns' ? 'Returns are under control' : view === 'quotations' ? 'Your quotations are ready' : 'Your workspace is ready'}</h3><p>Use the action above to add your first record. This module is connected to the same inventory and VAT workflow.</p></div></section>`; }
@@ -594,7 +674,7 @@ function printReturnInvoice(returnNumber) {
 	const refundTotal = Number(returned.refundTotal) || netTotal + refundVat;
 	const popup = window.open('', '_blank', 'width=850,height=1000');
 	if (!popup) return;
-	popup.document.write(salesDocumentMarkup({ title: 'SALES RETURN / مردودات مبيعات', numberLabel: 'Return', number: returned.no, date: returned.date, customerName: returned.customer, status: `Original invoice ${invoice.no}`, rows, subtotal: netTotal, vat: refundVat, total: refundTotal }));
+	popup.document.write(salesDocumentMarkup({ title: 'SALES RETURN / مردودات مبيعات', numberLabel: 'Return', number: returned.no, date: returned.date, customerName: returned.customer, status: `Original invoice ${invoice.no}`, rows, subtotal: netTotal, vat: refundVat, total: refundTotal, qr: zatcaQrSvg({ date: returned.date, total: refundTotal, vat: refundVat }) }));
 	popup.document.close();
 }
 
@@ -631,7 +711,7 @@ function syncCompanyHeader() {
 }
 
 
-function salesDocumentMarkup({ title, numberLabel, number, date, customerName, status, rows, subtotal, vat, total, notes = '' }) {
+function salesDocumentMarkup({ title, numberLabel, number, date, customerName, status, rows, subtotal, vat, total, notes = '', qr = '' }) {
 	const company = state.company || {};
 	const customer = state.customers.find(item => item.name === customerName) || {};
 	const companyName = company.name || 'AV COMPANY INC';
@@ -648,7 +728,7 @@ function salesDocumentMarkup({ title, numberLabel, number, date, customerName, s
 		<section class="parties"><div class="party"><div class="party-label">Bill to / العميل</div><b>${customerName || 'Walk-in customer'}</b>${customerDetails ? `<br>${customerDetails}` : ''}</div><div class="party" style="text-align:right"><div class="party-label">Document details / تفاصيل المستند</div>${numberLabel}: <b>${number}</b><br>Date: ${date}</div></section>
 		<table><thead><tr><th>Sl No.</th><th>Item Name</th><th>Qty</th><th>Unit</th><th class="num">Unit Price</th><th class="num">Discount</th><th class="num">Item Price</th><th class="num">VAT</th><th class="num">Total Amount</th></tr></thead><tbody>${rows || '<tr><td colspan="9">No items recorded</td></tr>'}</tbody></table>
 		<div class="totals"><div><span>Subtotal / المجموع</span><b>${money(subtotal)}</b></div><div><span>VAT / الضريبة</span><b>${money(vat)}</b></div><div class="grand"><span>Total / الإجمالي</span><b>${money(total)}</b></div></div>
-		${notes ? `<div class="notes"><b>Notes / ملاحظات</b><br>${notes}</div>` : ''}<div class="signatures"><span>Prepared by</span><span style="text-align:right">Customer signature</span></div><script>window.print();<\/script></body></html>`;
+		${notes ? `<div class="notes"><b>Notes / ملاحظات</b><br>${notes}</div>` : ''}${qr ? `<div style="margin-top:14px;width:110px">${qr}</div>` : ''}<div class="signatures"><span>Prepared by</span><span style="text-align:right">Customer signature</span></div><script>window.print();<\/script></body></html>`;
 }
 function syncSettingsAccess() {
 	const settingsButton = document.getElementById('settings-btn');
@@ -931,7 +1011,7 @@ function printInvoice(invoiceNumber) {
 	const returnRows = returnNet || returnVat ? `<tr><td></td><td>Sales returns</td><td></td><td></td><td></td><td></td><td class="num">-${money(returnNet)}</td><td class="num">-${money(returnVat)}</td><td class="num">-${money(returnNet + returnVat)}</td></tr>` : '';
 	const subtotal = invoice.subtotal == null ? invoice.total / 1.15 : Number(invoice.subtotal);
 	const vat = invoice.total - subtotal;
-	popup.document.write(salesDocumentMarkup({ title: 'TAX INVOICE / فاتورة ضريبية', numberLabel: 'Invoice', number: invoice.no, date: invoice.date, customerName: invoice.customer, status: invoice.status, rows: rows + returnRows, subtotal, vat, total: invoice.total }));
+	popup.document.write(salesDocumentMarkup({ title: 'TAX INVOICE / فاتورة ضريبية', numberLabel: 'Invoice', number: invoice.no, date: invoice.date, customerName: invoice.customer, status: invoice.status, rows: rows + returnRows, subtotal, vat, total: invoice.total, qr: zatcaQrSvg({ date: invoice.date, total: invoice.total + returnNet + returnVat, vat: vat + returnVat }) }));
 	popup.document.close();
 }
 
