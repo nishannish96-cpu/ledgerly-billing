@@ -93,6 +93,8 @@
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;border:1px solid #21745f;border-radius:10px;padding:18px;margin-bottom:18px"><label>Customer<select id="customer-select"><option>Walk-in customer</option><option>Harper &amp; Co.</option><option>Northline Studio</option><option>Meadow Pharmacy</option></select></label>
         <label>Invoice number<input id="invoice-number" readonly /></label>
         </div>
+        <div style="display:flex;gap:8px;margin:8px 0"><input id="scan-input" placeholder="▥ Scan barcode / SKU and press Enter" autocomplete="off" style="flex:1;padding:8px;border:1px solid #d4ded7;border-radius:6px" /><button class="date-chip" id="scan-camera" type="button" hidden>📷 Camera</button></div>
+        <div id="scan-message" style="font-size:12px;min-height:16px;color:#78817e"></div>
         <div style="display:flex;align-items:center;justify-content:space-between;margin:8px 0 10px"><b>Products</b><button class="date-chip" id="add-invoice-item" type="button">＋ Add product</button></div>
         <div class="invoice-items" id="invoice-items"></div>
         <label>Payment method<select id="payment-method"><option>Cash</option><option>Credit</option><option>Online</option></select></label>
@@ -151,8 +153,8 @@
       </form>
     </section>
   </div>
-  <script>if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js?v=68');</script>
+  <script>if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js?v=69');</script>
   <script src="qrcode.js?v=1"></script>
-<script src="app.js?v=141"></script>
+<script src="app.js?v=142"></script>
 </body>
 </html>

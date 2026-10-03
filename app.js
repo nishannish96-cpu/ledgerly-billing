@@ -596,6 +596,68 @@ document.getElementById('inventory-modal-backdrop').addEventListener('click', ev
 document.getElementById('inventory-form').addEventListener('submit', event => { event.preventDefault(); const sku = document.getElementById('inventory-sku').value.trim(); const existing = state.products.find(product => product.id.toLowerCase() === sku.toLowerCase()); const quantity = Number(document.getElementById('inventory-quantity').value); const price = Number(document.getElementById('inventory-price').value); if (existing) { existing.stock += quantity; existing.price = price; recordInventoryChange(existing, quantity, 'Stock received'); } else { const product = { id: sku, name: document.getElementById('inventory-name').value.trim(), brand: document.getElementById('inventory-brand').value.trim(), category: document.getElementById('inventory-category').value.trim(), stock: quantity, price, sold: 0 }; state.products.push(product); recordInventoryChange(product, quantity, 'New item'); } saveState(); closeInventoryModal(); state.view = 'inventory'; document.querySelectorAll('.nav-item').forEach(item => item.classList.toggle('active', item.dataset.view === state.view)); render(); });
 document.getElementById('modal-close').onclick = closeModal;
 document.getElementById('modal-backdrop').addEventListener('click', event => { if (event.target.id === 'modal-backdrop') closeModal(); });
+function scanProduct(code) {
+	const message = document.getElementById('scan-message');
+	const value = String(code || '').trim().toLowerCase();
+	if (!value) return;
+	const product = state.products.find(item => String(item.id).toLowerCase() === value || String(item.barcode || '').toLowerCase() === value);
+	if (!product) { message.style.color = '#b14f43'; message.textContent = `No item found for "${code}". Add it in Inventory using this code as the SKU.`; return; }
+	const rows = [...document.querySelectorAll('.invoice-item')];
+	let row = rows.find(item => item.querySelector('.invoice-product').value.trim().toLowerCase() === product.name.trim().toLowerCase());
+	if (row) {
+		const quantity = row.querySelector('.invoice-quantity');
+		quantity.value = (Number(quantity.value) || 0) + 1;
+	} else {
+		row = rows.find(item => !item.querySelector('.invoice-product').value.trim());
+		if (!row) { addInvoiceItem(); row = [...document.querySelectorAll('.invoice-item')].pop(); }
+		row.querySelector('.invoice-product').value = product.name;
+		row.querySelector('.invoice-price').value = Number(product.price) || 0;
+		row.querySelector('.invoice-unit').value = product.unit || 'pcs';
+		row.querySelector('.invoice-quantity').value = 1;
+	}
+	updateModalTotal();
+	message.style.color = (Number(product.stock) || 0) > 0 ? '#277252' : '#b14f43';
+	message.textContent = (Number(product.stock) || 0) > 0 ? `Added ${product.name}` : `${product.name} is out of stock`;
+}
+document.getElementById('scan-input').addEventListener('keydown', event => {
+	if (event.key !== 'Enter') return;
+	event.preventDefault();
+	scanProduct(event.target.value);
+	event.target.value = '';
+});
+document.getElementById('inventory-sku')?.addEventListener('keydown', event => { if (event.key === 'Enter') event.preventDefault(); });
+if ('BarcodeDetector' in window && navigator.mediaDevices?.getUserMedia) {
+	const cameraButton = document.getElementById('scan-camera');
+	cameraButton.hidden = false;
+	cameraButton.addEventListener('click', async () => {
+		const overlay = document.createElement('div');
+		overlay.style.cssText = 'position:fixed;inset:0;background:#000d;z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px';
+		overlay.innerHTML = '<video playsinline muted style="max-width:92vw;max-height:70vh;border-radius:8px"></video><button type="button" class="date-chip">Close</button>';
+		document.body.appendChild(overlay);
+		const video = overlay.querySelector('video');
+		let stream; let active = true; let lastCode = ''; let lastTime = 0;
+		const stop = () => { active = false; stream?.getTracks().forEach(track => track.stop()); overlay.remove(); };
+		overlay.querySelector('button').addEventListener('click', stop);
+		try {
+			stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+			video.srcObject = stream;
+			await video.play();
+			const detector = new BarcodeDetector();
+			const loop = async () => {
+				if (!active) return;
+				try {
+					const [found] = await detector.detect(video);
+					if (found && (found.rawValue !== lastCode || Date.now() - lastTime > 2000)) { lastCode = found.rawValue; lastTime = Date.now(); scanProduct(found.rawValue); }
+				} catch (error) { /* frame not ready */ }
+				setTimeout(loop, 250);
+			};
+			loop();
+		} catch (error) {
+			stop();
+			document.getElementById('scan-message').textContent = 'Camera access was denied or is unavailable.';
+		}
+	});
+}
 document.getElementById('add-invoice-item').addEventListener('click', addInvoiceItem);
 document.getElementById('vat-select').addEventListener('change', updateModalTotal);
 document.getElementById('invoice-form').addEventListener('submit', event => {
