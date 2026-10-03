@@ -1,3 +1,4 @@
+import gzip
 import hashlib
 import json
 import logging
@@ -8,17 +9,38 @@ import secrets
 import smtplib
 import sqlite3
 import sys
+import threading
 import time
 from email.message import EmailMessage
 from http.cookies import SimpleCookie
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 ROOT = Path(__file__).parent
 DATABASE = Path(os.environ.get('LEDGERLY_DATABASE', str(ROOT / 'ledgerly.db')))
 ALLOWED_ROLES = {'admin', 'cashier', 'storekeeper'}
 SESSION_TTL_SECONDS = 60 * 60 * 24 * 7
+LOGIN_MAX_FAILURES = 5
+LOGIN_IP_MAX_FAILURES = 30
+LOGIN_LOCK_SECONDS = 15 * 60
+BACKUP_KEEP_DAYS = 14
+BACKUP_EMAIL_INTERVAL = 60 * 60 * 24 * 7
+PUBLIC_FILES = {
+    'index.html', 'billing.html', 'login.html', 'app.js', 'i18n.js', 'qrcode.js', 'sw.js',
+    'styles.css', 'login.css', 'dark-mode.css', 'manifest.json', 'icon.svg',
+}
+SECURITY_HEADERS = {
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'DENY',
+    'Referrer-Policy': 'same-origin',
+    'Permissions-Policy': 'camera=(self), microphone=(), geolocation=()',
+    'Content-Security-Policy': (
+        "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+        "font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob:; connect-src 'self'; "
+        "object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+    ),
+}
 
 
 def connection():
@@ -109,6 +131,20 @@ def initialise_database():
         ''')
         database.execute('CREATE INDEX IF NOT EXISTS idx_activity_company ON activity_log (company_id, id DESC)')
         database.execute('''
+            CREATE TABLE IF NOT EXISTS login_attempts (
+                key TEXT PRIMARY KEY,
+                failures INTEGER NOT NULL DEFAULT 0,
+                locked_until INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL DEFAULT 0
+            )
+        ''')
+        database.execute('''
+            CREATE TABLE IF NOT EXISTS backup_emails (
+                company_id INTEGER PRIMARY KEY,
+                sent_at INTEGER NOT NULL
+            )
+        ''')
+        database.execute('''
             CREATE TABLE IF NOT EXISTS auth_sessions (
                 token_hash TEXT PRIMARY KEY,
                 user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -136,6 +172,101 @@ def initialise_database():
             ('storekeeper', 'Inventory and stock access'),
         ):
             database.execute('INSERT OR IGNORE INTO roles (name, description) VALUES (?, ?)', (role, description))
+
+
+def login_locked_seconds(database, keys):
+    now = int(time.time())
+    rows = database.execute(f"SELECT locked_until FROM login_attempts WHERE key IN ({','.join('?' * len(keys))})", keys).fetchall()
+    return max([row['locked_until'] - now for row in rows] + [0])
+
+
+def record_login_failure(database, username, ip):
+    now = int(time.time())
+    for key, limit in ((f'user:{username}', LOGIN_MAX_FAILURES), (f'ip:{ip}', LOGIN_IP_MAX_FAILURES)):
+        row = database.execute('SELECT failures, locked_until, updated_at FROM login_attempts WHERE key = ?', (key,)).fetchone()
+        failures = 0 if not row or (row['locked_until'] <= now and now - row['updated_at'] > LOGIN_LOCK_SECONDS) else row['failures']
+        failures += 1
+        locked_until = now + LOGIN_LOCK_SECONDS if failures >= limit else 0
+        if locked_until:
+            failures = 0
+        database.execute(
+            'INSERT INTO login_attempts (key, failures, locked_until, updated_at) VALUES (?, ?, ?, ?) '
+            'ON CONFLICT(key) DO UPDATE SET failures = excluded.failures, locked_until = excluded.locked_until, updated_at = excluded.updated_at',
+            (key, failures, locked_until, now),
+        )
+
+
+def clear_login_failures(database, username):
+    database.execute('DELETE FROM login_attempts WHERE key = ?', (f'user:{username}',))
+
+
+def backup_database():
+    folder = DATABASE.parent / 'backups'
+    folder.mkdir(parents=True, exist_ok=True)
+    target = folder / f"ledgerly-{time.strftime('%Y-%m-%d')}.db"
+    if target.exists():
+        return None
+    temporary = target.with_suffix('.tmp')
+    source = sqlite3.connect(DATABASE)
+    destination = sqlite3.connect(temporary)
+    try:
+        source.backup(destination)
+    finally:
+        destination.close()
+        source.close()
+    temporary.replace(target)
+    for old in sorted(folder.glob('ledgerly-*.db'))[:-BACKUP_KEEP_DAYS]:
+        old.unlink()
+    return target
+
+
+def send_backup_email(email, company_name, state_json):
+    host = os.environ.get('SMTP_HOST', 'smtp.gmail.com')
+    username = os.environ.get('SMTP_USER')
+    password = os.environ.get('SMTP_PASSWORD')
+    if not username or not password:
+        raise RuntimeError('SMTP is not configured.')
+    message = EmailMessage()
+    message['From'] = os.environ.get('SMTP_FROM', username)
+    message['To'] = email
+    message['Subject'] = f'Ledgerly weekly backup - {company_name}'
+    message.set_content('Your weekly Ledgerly data backup is attached. Keep it somewhere safe. You can restore it from Reports > Backup and export after unzipping it.')
+    message.add_attachment(gzip.compress(state_json.encode()), maintype='application', subtype='gzip', filename=f"ledgerly-backup-{time.strftime('%Y-%m-%d')}.json.gz")
+    with smtplib.SMTP(host, int(os.environ.get('SMTP_PORT', '587')), timeout=30) as smtp:
+        smtp.starttls()
+        smtp.login(username, password)
+        smtp.send_message(message)
+
+
+def email_weekly_backups(sender=send_backup_email):
+    now = int(time.time())
+    with connection() as database:
+        companies = database.execute(
+            'SELECT companies.id, companies.name, company_states.state_json, users.username AS owner FROM company_states '
+            'JOIN companies ON companies.id = company_states.company_id '
+            'JOIN users ON users.company_id = companies.id AND users.is_owner = 1'
+        ).fetchall()
+        for company in companies:
+            last = database.execute('SELECT sent_at FROM backup_emails WHERE company_id = ?', (company['id'],)).fetchone()
+            if last and now - last['sent_at'] < BACKUP_EMAIL_INTERVAL or not re.fullmatch(r'[^@\s]+@[^@\s]+\.[^@\s]+', company['owner']):
+                continue
+            try:
+                sender(company['owner'], company['name'], company['state_json'])
+            except (OSError, RuntimeError, smtplib.SMTPException, ValueError):
+                logging.exception('Unable to email weekly backup')
+                return
+            database.execute('INSERT INTO backup_emails (company_id, sent_at) VALUES (?, ?) ON CONFLICT(company_id) DO UPDATE SET sent_at = excluded.sent_at', (company['id'], now))
+            database.commit()
+
+
+def backup_loop():
+    while True:
+        try:
+            backup_database()
+            email_weekly_backups()
+        except Exception:
+            logging.exception('Scheduled backup failed')
+        time.sleep(60 * 60)
 
 
 def public_user(row):
@@ -339,6 +470,24 @@ class LedgerlyHandler(SimpleHTTPRequestHandler):
             self.send_header(name, value)
         self.end_headers()
         self.wfile.write(body)
+
+    def end_headers(self):
+        for name, value in SECURITY_HEADERS.items():
+            self.send_header(name, value)
+        if self.headers.get('X-Forwarded-Proto') == 'https':
+            self.send_header('Strict-Transport-Security', 'max-age=31536000')
+        super().end_headers()
+
+    def send_head(self):
+        path = unquote(urlparse(self.path).path)
+        if path != '/' and not (path.count('/') == 1 and path[1:] in PUBLIC_FILES):
+            self.send_error(404)
+            return None
+        return super().send_head()
+
+    def client_ip(self):
+        forwarded = self.headers.get('X-Forwarded-For', '').split(',')[-1].strip()
+        return forwarded or self.client_address[0]
 
     def read_json(self):
         length = int(self.headers.get('Content-Length', '0'))
@@ -595,11 +744,18 @@ class LedgerlyHandler(SimpleHTTPRequestHandler):
                         database.execute('DELETE FROM registration_codes WHERE email = ? AND code = ?', (username, code))
                         return self.send_json(503, {'error': email_failure_message(sys.exc_info()[1])})
                     return self.send_json(202, {'verification_required': True})
+                client_ip = self.client_ip()
+                wait = login_locked_seconds(database, [f'user:{username}', f'ip:{client_ip}'])
+                if wait > 0:
+                    return self.send_json(429, {'error': f'Too many failed attempts. Try again in {math.ceil(wait / 60)} minute(s).'}, {'Retry-After': str(wait)})
                 if not user:
+                    record_login_failure(database, username, client_ip)
                     return self.send_json(401, {'error': 'Invalid username or password.'})
                 _, digest = password_hash(password, user['password_salt'])
                 if not secrets.compare_digest(digest, user['password_hash']):
+                    record_login_failure(database, username, client_ip)
                     return self.send_json(401, {'error': 'Invalid username or password.'})
+                clear_login_failures(database, username)
                 login_result = {'token': create_session(database, user), 'user': public_user(user)}
                 log_activity(database, user['company_id'], user['username'], 'Signed in')
                 secure = '; Secure' if self.headers.get('X-Forwarded-Proto') == 'https' else ''
@@ -647,6 +803,7 @@ class LedgerlyHandler(SimpleHTTPRequestHandler):
 
 if __name__ == '__main__':
     initialise_database()
+    threading.Thread(target=backup_loop, daemon=True).start()
     port = int(os.environ.get('PORT', '55633'))
     server = ThreadingHTTPServer(('0.0.0.0', port), LedgerlyHandler)
     print(f'Ledgerly running on port {port}')
