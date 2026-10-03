@@ -61,6 +61,22 @@
           <p class="login-error" id="verify-error" role="alert" hidden></p>
           <p class="login-success" id="verify-success" role="status" hidden></p>
         </form>
+        <form id="forgot-form" hidden>
+          <p class="login-copy">Enter your account email and we'll send you a 6-digit reset code.</p>
+          <label>Email<input id="forgot-email" type="email" autocomplete="email" placeholder="Enter your email address" required /></label>
+          <button class="login-button" type="submit">Send reset code <span aria-hidden="true">→</span></button>
+          <button class="account-switch-button" id="forgot-back" type="button">Back to sign in</button>
+          <p class="login-error" id="forgot-error" role="alert" hidden></p>
+        </form>
+        <form id="reset-form" hidden>
+          <p class="login-copy">If an account exists for <strong id="reset-email"></strong>, a code was sent. It expires in 10 minutes.</p>
+          <label>Reset code<input id="reset-code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" placeholder="000000" required /></label>
+          <label>New password<div class="password-field"><input id="reset-password" type="password" autocomplete="new-password" placeholder="Create a new password" minlength="6" required /><button class="password-toggle" type="button" data-password-target="reset-password" aria-label="Show password">◉</button></div></label>
+          <label>Confirm new password<div class="password-field"><input id="reset-password-confirm" type="password" autocomplete="new-password" placeholder="Repeat your new password" required /><button class="password-toggle" type="button" data-password-target="reset-password-confirm" aria-label="Show password">◉</button></div></label>
+          <button class="login-button" type="submit">Reset password <span aria-hidden="true">→</span></button>
+          <button class="account-switch-button" id="reset-back" type="button">Back to sign in</button>
+          <p class="login-error" id="reset-error" role="alert" hidden></p>
+        </form>
         <p class="login-success" id="login-success" role="status" hidden></p>
         <p class="account-switch"><span id="switch-copy">Need an account?</span> <button class="account-switch-button" type="button" id="create-account-link">Create account</button></p>
         <p class="demo-note">Local mode credentials can be changed from Settings.</p>
@@ -68,7 +84,7 @@
       <p class="copyright">Ledgerly workspace · Local mode</p>
     </section>
   </main>
-  <script>if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js?v=65');</script>
+  <script>if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js?v=66');</script>
   <script>
     const form = document.getElementById('login-form');
     const createForm = document.getElementById('create-form');
@@ -83,6 +99,20 @@
     const createAccountLink = document.getElementById('create-account-link');
     const switchCopy = document.getElementById('switch-copy');
     let pendingVerificationEmail = '';
+    let pendingResetEmail = '';
+    const forgotForm = document.getElementById('forgot-form');
+    const resetForm = document.getElementById('reset-form');
+    const forgotError = document.getElementById('forgot-error');
+    const resetError = document.getElementById('reset-error');
+
+    function showForgotForm(target) {
+      [form, createForm, verifyForm, forgotForm, resetForm].forEach(item => { item.hidden = item !== target; });
+      accountSwitch.hidden = true;
+      error.hidden = true;
+      loginSuccess.hidden = true;
+      forgotError.hidden = true;
+      resetError.hidden = true;
+    }
 
     document.querySelectorAll('.password-toggle').forEach(toggle => {
       toggle.addEventListener('click', () => {
@@ -106,6 +136,8 @@
       form.hidden = showCreate;
       createForm.hidden = !showCreate;
       verifyForm.hidden = true;
+      forgotForm.hidden = true;
+      resetForm.hidden = true;
       accountSwitch.hidden = false;
       error.hidden = true;
       loginSuccess.hidden = true;
@@ -225,9 +257,53 @@
 
     forgotLink.addEventListener('click', event => {
       event.preventDefault();
-      error.textContent = 'Local mode has no password reset service. Use the demo credentials below.';
-      error.hidden = false;
+      showForgotForm(forgotForm);
+      document.getElementById('forgot-email').value = document.getElementById('login-email').value.trim();
+      document.getElementById('forgot-email').focus();
     });
+
+    forgotForm.addEventListener('submit', async event => {
+      event.preventDefault();
+      forgotError.hidden = true;
+      const email = document.getElementById('forgot-email').value.trim().toLowerCase();
+      try {
+        await requestAccount('/api/forgot-password', email, '');
+        pendingResetEmail = email;
+        document.getElementById('reset-email').textContent = email;
+        resetForm.reset();
+        showForgotForm(resetForm);
+        document.getElementById('reset-code').focus();
+      } catch (requestError) {
+        forgotError.textContent = requestError.message;
+        forgotError.hidden = false;
+      }
+    });
+
+    resetForm.addEventListener('submit', async event => {
+      event.preventDefault();
+      resetError.hidden = true;
+      const password = document.getElementById('reset-password').value;
+      if (password !== document.getElementById('reset-password-confirm').value) {
+        resetError.textContent = 'Passwords do not match.';
+        resetError.hidden = false;
+        return;
+      }
+      try {
+        await requestAccount('/api/reset-password', pendingResetEmail, password, { code: document.getElementById('reset-code').value.trim() });
+        showCreateForm(false);
+        document.getElementById('login-email').value = pendingResetEmail;
+        document.getElementById('login-password').value = '';
+        document.getElementById('login-password').focus();
+        loginSuccess.textContent = 'Password updated. Sign in with your new password.';
+        loginSuccess.hidden = false;
+      } catch (requestError) {
+        resetError.textContent = requestError.message;
+        resetError.hidden = false;
+      }
+    });
+
+    document.getElementById('forgot-back').addEventListener('click', () => showCreateForm(false));
+    document.getElementById('reset-back').addEventListener('click', () => showCreateForm(false));
   </script>
 </body>
 </html>

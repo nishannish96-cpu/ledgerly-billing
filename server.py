@@ -90,6 +90,14 @@ def initialise_database():
         if 'revision' not in state_columns:
             database.execute('ALTER TABLE company_states ADD COLUMN revision INTEGER NOT NULL DEFAULT 0')
         database.execute('''
+            CREATE TABLE IF NOT EXISTS password_resets (
+                email TEXT PRIMARY KEY COLLATE NOCASE,
+                code_hash TEXT NOT NULL,
+                expires_at INTEGER NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 0
+            )
+        ''')
+        database.execute('''
             CREATE TABLE IF NOT EXISTS auth_sessions (
                 token_hash TEXT PRIMARY KEY,
                 user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -224,17 +232,21 @@ def restricted_workspace(state, role, existing_state=None):
     return existing_state
 
 
-def send_verification_email(email, code):
+def send_verification_email(email, code, purpose='verify'):
     host = os.environ.get('SMTP_HOST', 'smtp.gmail.com')
     username = os.environ.get('SMTP_USER')
     password = os.environ.get('SMTP_PASSWORD')
     if not username or not password:
         raise RuntimeError('Email verification is not configured. Set SMTP_USER and SMTP_PASSWORD.')
     message = EmailMessage()
-    message['Subject'] = 'Verify your Ledgerly account'
     message['From'] = os.environ.get('SMTP_FROM', username)
     message['To'] = email
-    message.set_content(f'Your Ledgerly verification code is {code}. It expires in 10 minutes.')
+    if purpose == 'reset':
+        message['Subject'] = 'Reset your Ledgerly password'
+        message.set_content(f'Your Ledgerly password reset code is {code}. It expires in 10 minutes. If you did not request this, you can ignore this email.')
+    else:
+        message['Subject'] = 'Verify your Ledgerly account'
+        message.set_content(f'Your Ledgerly verification code is {code}. It expires in 10 minutes.')
     port = int(os.environ.get('SMTP_PORT', '587'))
     with smtplib.SMTP(host, port, timeout=15) as smtp:
         smtp.starttls()
@@ -295,7 +307,7 @@ class LedgerlyHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
-        if path not in ('/api/register', '/api/verify-registration', '/api/resend-registration-code', '/api/login', '/api/logout', '/api/update-user', '/api/update-user-role', '/api/state'):
+        if path not in ('/api/register', '/api/verify-registration', '/api/resend-registration-code', '/api/forgot-password', '/api/reset-password', '/api/login', '/api/logout', '/api/update-user', '/api/update-user-role', '/api/state'):
             return super().do_POST()
         try:
             payload = self.read_json()
@@ -354,6 +366,50 @@ class LedgerlyHandler(SimpleHTTPRequestHandler):
                         database.execute('UPDATE registration_codes SET code = ?, expires_at = ?, attempts = ? WHERE email = ?', (pending['code'], pending['expires_at'], pending['attempts'], username))
                         return self.send_json(503, {'error': email_failure_message(sys.exc_info()[1])})
                 return self.send_json(200, {'verification_required': True})
+            if path == '/api/forgot-password':
+                if not username:
+                    return self.send_json(400, {'error': 'Email is required.'})
+                with connection() as database:
+                    account = database.execute('SELECT 1 FROM users WHERE username = ?', (username,)).fetchone()
+                    existing = database.execute('SELECT expires_at FROM password_resets WHERE email = ?', (username,)).fetchone()
+                    now = int(time.time())
+                    recently_sent = existing and existing['expires_at'] - 600 > now - 60
+                    if account and not recently_sent:
+                        code = f'{secrets.randbelow(1_000_000):06d}'
+                        database.execute(
+                            'INSERT INTO password_resets (email, code_hash, expires_at, attempts) VALUES (?, ?, ?, 0) '
+                            'ON CONFLICT(email) DO UPDATE SET code_hash = excluded.code_hash, expires_at = excluded.expires_at, attempts = 0',
+                            (username, session_token_hash(code), now + 600),
+                        )
+                        try:
+                            send_verification_email(username, code, 'reset')
+                        except (OSError, RuntimeError, smtplib.SMTPException, ValueError):
+                            logging.exception('Unable to send password reset email')
+                            database.execute('DELETE FROM password_resets WHERE email = ?', (username,))
+                return self.send_json(202, {'reset_requested': True})
+            if path == '/api/reset-password':
+                code = str(payload.get('code', '')).strip()
+                if not username or not code:
+                    return self.send_json(400, {'error': 'Email and reset code are required.'})
+                if len(password) < 6:
+                    return self.send_json(400, {'error': 'Password must be at least 6 characters.'})
+                with connection() as database:
+                    pending = database.execute('SELECT * FROM password_resets WHERE email = ?', (username,)).fetchone()
+                    if not pending or pending['expires_at'] < int(time.time()) or pending['attempts'] >= 5:
+                        if pending:
+                            database.execute('DELETE FROM password_resets WHERE email = ?', (username,))
+                        return self.send_json(400, {'error': 'That reset code is invalid or expired.'})
+                    if not secrets.compare_digest(session_token_hash(code), pending['code_hash']):
+                        database.execute('UPDATE password_resets SET attempts = attempts + 1 WHERE email = ?', (username,))
+                        return self.send_json(400, {'error': 'That reset code is invalid or expired.'})
+                    account = database.execute('SELECT id FROM users WHERE username = ?', (username,)).fetchone()
+                    if not account:
+                        return self.send_json(400, {'error': 'That reset code is invalid or expired.'})
+                    salt, digest = password_hash(password)
+                    database.execute('UPDATE users SET password_hash = ?, password_salt = ? WHERE id = ?', (digest, salt, account['id']))
+                    database.execute('DELETE FROM auth_sessions WHERE user_id = ?', (account['id'],))
+                    database.execute('DELETE FROM password_resets WHERE email = ?', (username,))
+                return self.send_json(200, {'password_reset': True})
             if path == '/api/state':
                 state = payload.get('state')
                 if not isinstance(state, dict):
