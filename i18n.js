@@ -73,6 +73,12 @@
 		'＋ Add user': '＋ إضافة مستخدم', 'Software theme': 'مظهر البرنامج', 'Choose the workspace accent color.': 'اختر لون مساحة العمل.', 'Save profile': 'حفظ الملف',
 		'Forest': 'غابة', 'Ocean': 'محيط', 'Berry': 'توت', 'Amber': 'عنبر', 'Close': 'إغلاق',
 		// Login
+		'Purchases': 'المشتريات', '▥ Purchases': '▥ المشتريات', 'Procurement': 'المشتريات والتوريد', 'Purchases and suppliers': 'المشتريات والموردون', 'Record supplier bills, receive stock and track input VAT.': 'سجل فواتير الموردين واستلم المخزون وتابع ضريبة المدخلات.',
+		'＋ Add supplier': '＋ إضافة مورد', '＋ New purchase': '＋ مشترى جديد', 'Total purchases': 'إجمالي المشتريات', 'Input VAT': 'ضريبة المدخلات', 'Reclaimable VAT': 'ضريبة قابلة للاسترداد', 'Payable to suppliers': 'مستحق للموردين',
+		'Unpaid purchases': 'مشتريات غير مدفوعة', 'Suppliers': 'الموردون', 'In directory': 'في الدليل', 'Purchase': 'المشترى', 'Supplier': 'المورد', 'Supplier invoice': 'فاتورة المورد', 'Mark paid': 'تحديد كمدفوع',
+		'Unpaid': 'غير مدفوعة', 'Name': 'الاسم', 'Total purchased': 'إجمالي المشتريات', 'Payable': 'المستحق', 'No suppliers added yet.': 'لم تتم إضافة موردين بعد.', 'No purchases recorded yet.': 'لا توجد مشتريات مسجلة بعد.',
+		'Add supplier': 'إضافة مورد', 'New purchase': 'مشترى جديد', 'Supplier name': 'اسم المورد', 'Supplier invoice no.': 'رقم فاتورة المورد', 'Add received items to inventory stock': 'إضافة الأصناف المستلمة إلى المخزون', '＋ Add item': '＋ إضافة صنف',
+		'Output less returns and input VAT': 'المخرجات ناقص المرتجعات وضريبة المدخلات',
 		'Retail finance workspace': 'مساحة عمل مالية للتجزئة', 'Keep every sale in view.': 'تابع كل عملية بيع.', 'Invoices, inventory, returns, and payment history in one calm workspace.': 'الفواتير والمخزون والمرتجعات وسجل الدفعات في مساحة عمل واحدة.',
 		'Secure local workspace': 'مساحة عمل آمنة', 'Welcome back': 'مرحبا بعودتك', 'Sign in to Ledgerly': 'سجل الدخول إلى ليدجرلي', 'Use your workspace credentials to continue.': 'استخدم بيانات مساحة العمل للمتابعة.',
 		'Username': 'اسم المستخدم', 'Enter your username': 'أدخل اسم المستخدم', 'Password': 'كلمة المرور', 'Enter your password': 'أدخل كلمة المرور', 'Show password': 'إظهار كلمة المرور', 'Remember me': 'تذكرني',
@@ -99,7 +105,7 @@
 	const RULES = [
 		[/^Hello, (.+)$/, 'مرحبا، $1'], [/^(\d+) paid invoices?$/, '$1 فاتورة مدفوعة'], [/^(\d+) pending invoices?$/, '$1 فاتورة معلقة'],
 		[/^⌕\s+Search invoices$/, '⌕ بحث في الفواتير'], [/^(All invoices|Quotation history|Created delivery notes|Customers) \((\d+)\)$/, (m, name, count) => `${AR[name] || ({ 'Quotation history': 'سجل عروض الأسعار', 'Created delivery notes': 'إشعارات التسليم المنشأة' })[name]} (${count})`],
-		[/^Return history \((\d+)\)$/, 'سجل المرتجعات ($1)'], [/^Inventory history \((\d+)\)$/, 'سجل المخزون ($1)'],
+		[/^Purchase history \((\d+)\)$/, 'سجل المشتريات ($1)'], [/^Suppliers \((\d+)\)$/, 'الموردون ($1)'], [/^(\d+) purchases$/, '$1 مشتريات'], [/^Return history \((\d+)\)$/, 'سجل المرتجعات ($1)'], [/^Inventory history \((\d+)\)$/, 'سجل المخزون ($1)'],
 		[/^(\d+) invoices?$/, '$1 فاتورة'], [/^(\d+) return records$/, '$1 سجل مرتجع'], [/^(\d+) returns?$/, '$1 مرتجع'],
 		[/^Added (.+)$/, 'تمت إضافة $1'], [/^(.+) is out of stock$/, '$1 غير متوفر في المخزون'],
 		[/^No item found for "(.*)"\..*$/, 'لا يوجد صنف بهذا الرمز "$1". أضفه من المخزون باستخدام الرمز كرقم صنف.'],

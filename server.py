@@ -162,6 +162,8 @@ ACTIVITY_COLLECTIONS = {
     'customers': ('name', 'Customer'),
     'products': ('id', 'Item'),
     'invoicePayments': ('id', 'Payment'),
+    'purchases': ('no', 'Purchase'),
+    'suppliers': ('name', 'Supplier'),
 }
 ACTIVITY_RETENTION = 5000
 

@@ -38,7 +38,7 @@ try {
 	localStorage.removeItem(accountStorageKey);
 }
 const defaultCompany = { name: '', initials: '', vat: '', phone: '', email: '', location: '', address: '' };
-let state = { view: 'overview', quotations: savedState?.quotations || [], invoices: savedState?.invoices || [], invoicePayments: savedState?.invoicePayments || [], products: savedState?.products || [], deliveryNotes: savedState?.deliveryNotes || [], customers: savedState?.customers || [], returns: savedState?.returns || [], inventoryHistory: savedState?.inventoryHistory || [], company: savedState?.company || defaultCompany, credentials: savedState?.credentials || { username: activeUsername, password: '' }, users: savedState?.users || [{ username: activeUsername, password: '', role: sessionStorage.getItem('ledgerly-role') || 'admin' }] };
+let state = { view: 'overview', quotations: savedState?.quotations || [], invoices: savedState?.invoices || [], invoicePayments: savedState?.invoicePayments || [], products: savedState?.products || [], deliveryNotes: savedState?.deliveryNotes || [], customers: savedState?.customers || [], suppliers: savedState?.suppliers || [], purchases: savedState?.purchases || [], returns: savedState?.returns || [], inventoryHistory: savedState?.inventoryHistory || [], company: savedState?.company || defaultCompany, credentials: savedState?.credentials || { username: activeUsername, password: '' }, users: savedState?.users || [{ username: activeUsername, password: '', role: sessionStorage.getItem('ledgerly-role') || 'admin' }] };
 function normalizeWorkspaceUsers() { state.users = (Array.isArray(state.users) ? state.users : []).filter(user => user && typeof user.username === 'string'); if (!state.credentials || typeof state.credentials !== 'object') state.credentials = { username: activeUsername, password: '' }; }
 normalizeWorkspaceUsers();
 let invoiceDraft = null;
@@ -101,9 +101,9 @@ function syncThemeSettings() {
 		swatch.classList.toggle('is-selected', swatch.dataset.themeAccent === (document.documentElement.dataset.accent || 'forest'));
 	});
 }
-function stateSnapshot() { return { quotations: state.quotations, invoices: state.invoices, invoicePayments: state.invoicePayments, products: state.products, deliveryNotes: state.deliveryNotes, customers: state.customers, returns: state.returns, inventoryHistory: state.inventoryHistory, company: state.company, users: state.users.map(user => ({ username: user.username, role: user.role, is_owner: Boolean(user.is_owner) })) }; }
-function hasWorkspaceData(snapshot) { return ['quotations', 'invoices', 'products', 'deliveryNotes', 'customers', 'returns', 'inventoryHistory'].some(key => Array.isArray(snapshot?.[key]) && snapshot[key].length) || Boolean(snapshot?.company?.name); }
-function mergeWorkspaceStates(remoteState, localState) { const merged = { ...remoteState, ...localState }; const keys = { quotations: 'no', invoices: 'no', invoicePayments: 'id', products: 'id', deliveryNotes: 'no', customers: 'name', returns: 'no', users: 'username' }; Object.entries(keys).forEach(([key, id]) => { const records = new Map(); [...(remoteState?.[key] || []), ...(localState?.[key] || [])].forEach(record => { if (record) records.set(String(record[id] || JSON.stringify(record)), record); }); merged[key] = [...records.values()]; }); const movements = new Map(); [...(remoteState?.inventoryHistory || []), ...(localState?.inventoryHistory || [])].forEach(record => movements.set(JSON.stringify([record.date, record.sku, record.change, record.reason, record.reference]), record)); merged.inventoryHistory = [...movements.values()]; merged.company = Object.fromEntries([...new Set([...Object.keys(remoteState?.company || {}), ...Object.keys(localState?.company || {})])].map(key => [key, localState?.company?.[key] || remoteState?.company?.[key] || ''])); return merged; }
+function stateSnapshot() { return { quotations: state.quotations, invoices: state.invoices, invoicePayments: state.invoicePayments, products: state.products, deliveryNotes: state.deliveryNotes, customers: state.customers, suppliers: state.suppliers, purchases: state.purchases, returns: state.returns, inventoryHistory: state.inventoryHistory, company: state.company, users: state.users.map(user => ({ username: user.username, role: user.role, is_owner: Boolean(user.is_owner) })) }; }
+function hasWorkspaceData(snapshot) { return ['quotations', 'invoices', 'products', 'deliveryNotes', 'customers', 'suppliers', 'purchases', 'returns', 'inventoryHistory'].some(key => Array.isArray(snapshot?.[key]) && snapshot[key].length) || Boolean(snapshot?.company?.name); }
+function mergeWorkspaceStates(remoteState, localState) { const merged = { ...remoteState, ...localState }; const keys = { quotations: 'no', invoices: 'no', invoicePayments: 'id', products: 'id', deliveryNotes: 'no', customers: 'name', suppliers: 'name', purchases: 'no', returns: 'no', users: 'username' }; Object.entries(keys).forEach(([key, id]) => { const records = new Map(); [...(remoteState?.[key] || []), ...(localState?.[key] || [])].forEach(record => { if (record) records.set(String(record[id] || JSON.stringify(record)), record); }); merged[key] = [...records.values()]; }); const movements = new Map(); [...(remoteState?.inventoryHistory || []), ...(localState?.inventoryHistory || [])].forEach(record => movements.set(JSON.stringify([record.date, record.sku, record.change, record.reason, record.reference]), record)); merged.inventoryHistory = [...movements.values()]; merged.company = Object.fromEntries([...new Set([...Object.keys(remoteState?.company || {}), ...Object.keys(localState?.company || {})])].map(key => [key, localState?.company?.[key] || remoteState?.company?.[key] || ''])); return merged; }
 function syncStateToServer(snapshot) { serverSyncQueue = serverSyncQueue.catch(() => {}).then(async () => { let lastError; for (let attempt = 0; attempt < 3; attempt += 1) { try { const response = await fetch('/api/state', { method: 'POST', keepalive: true, headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sessionStorage.getItem('ledgerly-token') || ''}` }, body: JSON.stringify({ state: snapshot }) }); if (!response.ok) throw new Error('Workspace sync failed.'); const result = await response.json(); lastRemoteRevision = Math.max(lastRemoteRevision, Number(result.revision) || 0); return result; } catch (error) { lastError = error; if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 500 * (2 ** attempt))); } } throw lastError; }); return serverSyncQueue; }
 function markStateSynced(snapshot) { if (localStorage.getItem(accountStorageKey) !== JSON.stringify(snapshot)) return; localStateDirty = false; localStorage.removeItem(pendingSyncKey); }
 function saveState() { normalizeDateTimes(); const snapshot = stateSnapshot(); localStateDirty = true; localStorage.setItem(accountStorageKey, JSON.stringify(snapshot)); localStorage.setItem(pendingSyncKey, 'true'); if (!remoteStateReady) return Promise.resolve(false); const syncRequest = syncStateToServer(snapshot); syncRequest.then(() => markStateSynced(snapshot)).catch(() => {}); return syncRequest; }
@@ -435,7 +435,7 @@ function zatcaQrSvg({ date, total, vat }) {
 	qr.make();
 	return qr.createSvgTag(3, 2);
 }
-const BACKUP_KEYS = ['quotations', 'invoices', 'invoicePayments', 'products', 'deliveryNotes', 'customers', 'returns', 'inventoryHistory', 'company'];
+const BACKUP_KEYS = ['quotations', 'invoices', 'invoicePayments', 'products', 'deliveryNotes', 'customers', 'suppliers', 'purchases', 'returns', 'inventoryHistory', 'company'];
 function downloadFile(name, content, type) {
 	const link = document.createElement('a');
 	link.href = URL.createObjectURL(new Blob([content], { type }));
@@ -504,6 +504,110 @@ async function loadActivityLog() {
 	}
 }
 document.addEventListener('click', event => { if (event.target.closest('#activity-refresh')) loadActivityLog(); });
+const escHtml = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
+const btnStyle = 'color:#08614d;border:1px solid #08614d;border-radius:5px;padding:4px 8px;font-size:11px;font-weight:700';
+function purchaseLineValues(item) {
+	const quantity = Math.max(0, Number(item.quantity) || 0);
+	const price = Math.max(0, Number(item.price) || 0);
+	const vatRate = Math.max(0, Number(item.vatRate ?? 0.15) || 0);
+	const net = quantity * price;
+	return { quantity, price, net, vat: net * vatRate, total: net * (1 + vatRate) };
+}
+function purchaseDate(purchase) {
+	const date = /^\d{4}-\d{2}-\d{2}$/.test(purchase.date) ? new Date(`${purchase.date}T12:00:00`) : parseDocDate(purchase.date);
+	return date || null;
+}
+function nextPurchaseNumber() { const numbers = state.purchases.map(purchase => Number((String(purchase.no).match(/PUR-(\d+)/i) || [0, 0])[1])); return `PUR-${String(Math.max(0, ...numbers) + 1).padStart(4, '0')}`; }
+function openFormModal(title, bodyHtml, onSubmit) {
+	const overlay = document.createElement('div');
+	overlay.style.cssText = 'position:fixed;inset:0;background:#0008;z-index:9000;display:flex;align-items:flex-start;justify-content:center;overflow:auto;padding:24px 12px';
+	overlay.innerHTML = `<form style="background:#fff;border-radius:10px;padding:20px;width:min(760px,100%);display:grid;gap:12px"><div style="display:flex;justify-content:space-between;align-items:center"><h2 style="margin:0">${title}</h2><button type="button" data-close style="font-size:20px;border:0;background:none;cursor:pointer">×</button></div>${bodyHtml}<div class="form-error" style="color:#b14f43;min-height:16px;font-size:12px"></div><button class="primary-btn" type="submit">Save</button></form>`;
+	document.body.appendChild(overlay);
+	const form = overlay.querySelector('form');
+	const close = () => overlay.remove();
+	overlay.querySelector('[data-close]').addEventListener('click', close);
+	form.addEventListener('submit', event => {
+		event.preventDefault();
+		const error = onSubmit(form);
+		if (error) form.querySelector('.form-error').textContent = error; else close();
+	});
+	return form;
+}
+const fieldStyle = 'width:100%;padding:8px;border:1px solid #d4ded7;border-radius:6px;box-sizing:border-box';
+function renderPurchases() {
+	const totals = state.purchases.map(purchase => ({ purchase, ...purchaseTotals(purchase) }));
+	const spend = totals.reduce((sum, row) => sum + row.total, 0);
+	const inputVat = totals.reduce((sum, row) => sum + row.vat, 0);
+	const unpaid = totals.filter(row => row.purchase.status !== 'Paid').reduce((sum, row) => sum + row.total, 0);
+	const supplierRows = state.suppliers.map(supplier => {
+		const own = totals.filter(row => row.purchase.supplier === supplier.name);
+		const owed = own.filter(row => row.purchase.status !== 'Paid').reduce((sum, row) => sum + row.total, 0);
+		return `<tr><td><b>${escHtml(supplier.name)}</b></td><td>${escHtml(supplier.mobile) || '—'}</td><td>${escHtml(supplier.vat) || '—'}</td><td>${money(own.reduce((sum, row) => sum + row.total, 0))}</td><td>${money(owed)}</td><td><button class="delete-supplier" data-supplier="${escHtml(supplier.name)}" style="${btnStyle};color:#b14f43;border-color:#b14f43">Delete</button></td></tr>`;
+	}).join('') || '<tr><td colspan="6">No suppliers added yet.</td></tr>';
+	const purchaseRows = totals.map(({ purchase, net, vat, total }) => `<tr><td><b>${escHtml(purchase.no)}</b></td><td>${escHtml(purchase.date)}</td><td>${escHtml(purchase.supplier)}</td><td>${escHtml(purchase.ref) || '—'}</td><td>${money(net)}</td><td>${money(vat)}</td><td>${money(total)}</td><td><span class="status ${purchase.status === 'Paid' ? 'paid' : 'pending'}">${escHtml(purchase.status)}</span></td><td>${purchase.status === 'Paid' ? '' : `<button class="pay-purchase" data-purchase="${escHtml(purchase.no)}" style="${btnStyle}">Mark paid</button>`}</td></tr>`).join('') || '<tr><td colspan="9">No purchases recorded yet.</td></tr>';
+	return `<div class="page-heading"><div><div class="eyebrow">Procurement</div><h1>Purchases and suppliers</h1><p>Record supplier bills, receive stock and track input VAT.</p></div><span style="display:flex;gap:8px"><button class="primary-btn" id="add-supplier">＋ Add supplier</button><button class="primary-btn" id="add-purchase">＋ New purchase</button></span></div><section class="stats-grid report-stats"><article class="stat-card"><span class="stat-label">Total purchases</span><strong class="stat-value">${money(spend)}</strong><span class="stat-note">${state.purchases.length} purchases</span></article><article class="stat-card"><span class="stat-label">Input VAT</span><strong class="stat-value">${money(inputVat)}</strong><span class="stat-note">Reclaimable VAT</span></article><article class="stat-card"><span class="stat-label">Payable to suppliers</span><strong class="stat-value">${money(unpaid)}</strong><span class="stat-note">Unpaid purchases</span></article><article class="stat-card"><span class="stat-label">Suppliers</span><strong class="stat-value">${state.suppliers.length}</strong><span class="stat-note">In directory</span></article></section><section class="panel"><div class="panel-header"><h2>Purchase history (${state.purchases.length})</h2></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Purchase</th><th>Date</th><th>Supplier</th><th>Supplier invoice</th><th>Net amount</th><th>VAT</th><th>Total</th><th>Status</th><th></th></tr></thead><tbody>${purchaseRows}</tbody></table></div></section><section class="panel" style="margin-top:24px"><div class="panel-header"><h2>Suppliers (${state.suppliers.length})</h2></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Name</th><th>Mobile</th><th>VAT number</th><th>Total purchased</th><th>Payable</th><th></th></tr></thead><tbody>${supplierRows}</tbody></table></div></section>`;
+}
+function purchaseTotals(purchase) {
+	const lines = (purchase.items || []).map(purchaseLineValues);
+	return { net: lines.reduce((sum, line) => sum + line.net, 0), vat: lines.reduce((sum, line) => sum + line.vat, 0), total: lines.reduce((sum, line) => sum + line.total, 0) };
+}
+function purchaseItemRow() {
+	return `<div class="purchase-item" style="display:grid;grid-template-columns:2fr 70px 70px 90px 80px 28px;gap:6px;align-items:center"><input class="pi-product" list="purchase-product-list" placeholder="Item name" style="${fieldStyle}"><input class="pi-qty" type="number" min="0" step="0.01" value="1" style="${fieldStyle}" title="Quantity"><input class="pi-unit" value="pcs" style="${fieldStyle}" title="Unit"><input class="pi-price" type="number" min="0" step="0.01" placeholder="Cost" style="${fieldStyle}" title="Unit cost excluding VAT"><select class="pi-vat" style="${fieldStyle}"><option value="0.15">VAT 15%</option><option value="0">VAT 0%</option></select><button type="button" class="pi-remove" style="border:0;background:none;color:#b14f43;font-size:18px;cursor:pointer">×</button></div>`;
+}
+document.addEventListener('click', event => {
+	if (event.target.closest('#add-supplier')) {
+		openFormModal('Add supplier', `<label>Supplier name<input name="name" required style="${fieldStyle}"></label><label>Mobile number<input name="mobile" style="${fieldStyle}"></label><label>VAT number<input name="vat" style="${fieldStyle}"></label><label>Address<input name="address" style="${fieldStyle}"></label>`, form => {
+			const data = Object.fromEntries(new FormData(form));
+			const name = data.name.trim();
+			if (!name) return 'Supplier name is required.';
+			if (state.suppliers.some(supplier => supplier.name.toLowerCase() === name.toLowerCase())) return 'That supplier already exists.';
+			state.suppliers.unshift({ name, mobile: data.mobile.trim(), vat: data.vat.trim(), address: data.address.trim() });
+			saveState(); render();
+		});
+	}
+	if (event.target.closest('#add-purchase')) {
+		const today = new Date().toISOString().slice(0, 10);
+		const form = openFormModal('New purchase', `<datalist id="purchase-supplier-list">${state.suppliers.map(supplier => `<option value="${escHtml(supplier.name)}"></option>`).join('')}</datalist><datalist id="purchase-product-list">${state.products.map(product => `<option value="${escHtml(product.name)}"></option>`).join('')}</datalist><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px"><label>Supplier<input name="supplier" list="purchase-supplier-list" required style="${fieldStyle}"></label><label>Supplier invoice no.<input name="ref" style="${fieldStyle}"></label><label>Date<input name="date" type="date" value="${today}" required style="${fieldStyle}"></label><label>Payment<select name="status" style="${fieldStyle}"><option>Unpaid</option><option>Paid</option></select></label></div><div id="purchase-items" style="display:grid;gap:8px">${purchaseItemRow()}</div><button type="button" id="purchase-add-line" style="${btnStyle};justify-self:start">＋ Add item</button><label style="display:flex;gap:8px;align-items:center"><input type="checkbox" name="stock" checked> Add received items to inventory stock</label>`, form => {
+			const data = Object.fromEntries(new FormData(form));
+			const supplierName = data.supplier.trim();
+			const items = [...form.querySelectorAll('.purchase-item')].map(row => ({ product: row.querySelector('.pi-product').value.trim(), quantity: Number(row.querySelector('.pi-qty').value) || 0, unit: row.querySelector('.pi-unit').value.trim() || 'pcs', price: Number(row.querySelector('.pi-price').value) || 0, vatRate: Number(row.querySelector('.pi-vat').value) })).filter(item => item.product && item.quantity > 0);
+			if (!supplierName) return 'Supplier is required.';
+			if (!items.length) return 'Add at least one item with a quantity.';
+			if (!state.suppliers.some(supplier => supplier.name.toLowerCase() === supplierName.toLowerCase())) state.suppliers.unshift({ name: supplierName, mobile: '', vat: '', address: '' });
+			const supplier = state.suppliers.find(entry => entry.name.toLowerCase() === supplierName.toLowerCase());
+			const purchase = { no: nextPurchaseNumber(), supplier: supplier.name, ref: data.ref.trim(), date: data.date, status: data.status === 'Paid' ? 'Paid' : 'Unpaid', items, stocked: Boolean(data.stock) };
+			Object.assign(purchase, purchaseTotals(purchase));
+			if (purchase.stocked) items.forEach(item => {
+				let product = findInventoryProduct(item.product);
+				if (product) { product.stock = (Number(product.stock) || 0) + item.quantity; }
+				else {
+					let serial = state.products.length + 1;
+					while (state.products.some(entry => entry.id === `SKU-${String(serial).padStart(4, '0')}`)) serial += 1;
+					product = { id: `SKU-${String(serial).padStart(4, '0')}`, name: item.product, brand: '', category: 'General', unit: item.unit, stock: item.quantity, price: item.price, sold: 0 };
+					state.products.push(product);
+				}
+				recordInventoryChange(product, item.quantity, 'Purchase received', purchase.no);
+			});
+			state.purchases.unshift(purchase);
+			saveState(); render();
+		});
+		form.addEventListener('click', clickEvent => {
+			if (clickEvent.target.closest('#purchase-add-line')) form.querySelector('#purchase-items').insertAdjacentHTML('beforeend', purchaseItemRow());
+			const remove = clickEvent.target.closest('.pi-remove');
+			if (remove && form.querySelectorAll('.purchase-item').length > 1) remove.closest('.purchase-item').remove();
+		});
+	}
+	const pay = event.target.closest('.pay-purchase');
+	if (pay) {
+		const purchase = state.purchases.find(entry => entry.no === pay.dataset.purchase);
+		if (purchase) { purchase.status = 'Paid'; saveState(); render(); }
+	}
+	const removeSupplier = event.target.closest('.delete-supplier');
+	if (removeSupplier && window.confirm(`Delete ${removeSupplier.dataset.supplier}? Existing purchases will be kept.`)) {
+		state.suppliers = state.suppliers.filter(supplier => supplier.name !== removeSupplier.dataset.supplier);
+		saveState(); render();
+	}
+});
 const vatReportRange = { from: '', to: '' };
 function vatReportData() {
 	const from = vatReportRange.from ? new Date(`${vatReportRange.from}T00:00:00`) : null;
@@ -522,15 +626,16 @@ function vatReportData() {
 		return { no: invoice.no, date: invoice.date, customer: invoice.customer, net, vat };
 	});
 	const returns = state.returns.filter(item => inRange(item.date)).map(item => ({ no: item.no, date: item.date, customer: item.customer, net: returnNetTotal(item), vat: returnVatTotal(item) }));
+	const purchases = state.purchases.filter(purchase => { const date = purchaseDate(purchase); return !(from || to) || (date && (!from || date >= from) && (!to || date <= to)); }).map(purchase => ({ no: purchase.no, date: purchase.date, customer: purchase.supplier, ...purchaseTotals(purchase) }));
 	const sum = (rows, key) => rows.reduce((total, row) => total + row[key], 0);
-	return { sales, returns, salesNet: sum(sales, 'net'), salesVat: sum(sales, 'vat'), returnNet: sum(returns, 'net'), returnVat: sum(returns, 'vat') };
+	return { sales, returns, purchases, salesNet: sum(sales, 'net'), salesVat: sum(sales, 'vat'), returnNet: sum(returns, 'net'), returnVat: sum(returns, 'vat'), purchaseNet: sum(purchases, 'net'), inputVat: sum(purchases, 'vat') };
 }
 function vatReportMarkup() {
 	const data = vatReportData();
 	const row = (type, entry, sign) => `<tr><td>${type}</td><td><b>${entry.no}</b></td><td>${entry.date}</td><td>${entry.customer || 'Walk-in customer'}</td><td class="num">${sign}${money(entry.net)}</td><td class="num">${sign}${money(entry.vat)}</td></tr>`;
-	const rows = [...data.sales.map(entry => row('Invoice', entry, '')), ...data.returns.map(entry => row('Return', entry, '-'))].join('');
-	const netVat = data.salesVat - data.returnVat;
-	return `<section class="panel" style="margin-top:24px" id="vat-report"><div class="panel-header"><h2>VAT report (15%)</h2><span style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><label>From <input type="date" id="vat-from" value="${vatReportRange.from}"></label><label>To <input type="date" id="vat-to" value="${vatReportRange.to}"></label><button type="button" id="vat-csv" style="color:#08614d;border:1px solid #08614d;border-radius:5px;padding:4px 8px;font-weight:700">Export CSV</button><button type="button" id="vat-print" style="color:#08614d;border:1px solid #08614d;border-radius:5px;padding:4px 8px;font-weight:700">Print</button></span></div><section class="stats-grid report-stats"><article class="stat-card"><span class="stat-label">Taxable sales</span><strong class="stat-value">${money(data.salesNet - data.returnNet)}</strong><span class="stat-note">After returns</span></article><article class="stat-card"><span class="stat-label">Output VAT</span><strong class="stat-value">${money(data.salesVat)}</strong><span class="stat-note">${data.sales.length} invoices</span></article><article class="stat-card"><span class="stat-label">VAT on returns</span><strong class="stat-value">${money(data.returnVat)}</strong><span class="stat-note">${data.returns.length} returns</span></article><article class="stat-card"><span class="stat-label">Net VAT payable</span><strong class="stat-value">${money(netVat)}</strong><span class="stat-note">Output VAT less returns</span></article></section><div class="table-wrap"><table class="data-table"><thead><tr><th>Type</th><th>Number</th><th>Date</th><th>Customer</th><th>Net amount</th><th>VAT</th></tr></thead><tbody>${rows || '<tr><td colspan="6">No transactions in this period.</td></tr>'}</tbody></table></div></section>`;
+	const rows = [...data.sales.map(entry => row('Invoice', entry, '')), ...	data.returns.map(entry => row('Return', entry, '-')), ...data.purchases.map(entry => row('Purchase', entry, ''))].join('');
+		const netVat = data.salesVat - data.returnVat - data.inputVat;
+	return `<section class="panel" style="margin-top:24px" id="vat-report"><div class="panel-header"><h2>VAT report (15%)</h2><span style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><label>From <input type="date" id="vat-from" value="${vatReportRange.from}"></label><label>To <input type="date" id="vat-to" value="${vatReportRange.to}"></label><button type="button" id="vat-csv" style="color:#08614d;border:1px solid #08614d;border-radius:5px;padding:4px 8px;font-weight:700">Export CSV</button><button type="button" id="vat-print" style="color:#08614d;border:1px solid #08614d;border-radius:5px;padding:4px 8px;font-weight:700">Print</button></span></div><section class="stats-grid report-stats"><article class="stat-card"><span class="stat-label">Taxable sales</span><strong class="stat-value">${money(data.salesNet - data.returnNet)}</strong><span class="stat-note">After returns</span></article><article class="stat-card"><span class="stat-label">Output VAT</span><strong class="stat-value">${money(data.salesVat)}</strong><span class="stat-note">${data.sales.length} invoices</span></article><article class="stat-card"><span class="stat-label">VAT on returns</span><strong class="stat-value">${money(data.returnVat)}</strong><span class="stat-note">${data.returns.length} returns</span></article><article class="stat-card"><span class="stat-label">Input VAT</span><strong class="stat-value">${money(data.inputVat)}</strong><span class="stat-note">${data.purchases.length} purchases</span></article><article class="stat-card"><span class="stat-label">Net VAT payable</span><strong class="stat-value">${money(netVat)}</strong><span class="stat-note">Output less returns and input VAT</span></article></section><div class="table-wrap"><table class="data-table"><thead><tr><th>Type</th><th>Number</th><th>Date</th><th>Customer</th><th>Net amount</th><th>VAT</th></tr></thead><tbody>${rows || '<tr><td colspan="6">No transactions in this period.</td></tr>'}</tbody></table></div></section>`;
 }
 document.addEventListener('change', event => {
 	if (!event.target.matches('#vat-from, #vat-to')) return;
@@ -545,7 +650,8 @@ document.addEventListener('click', event => {
 		const lines = [['Type', 'Number', 'Date', 'Customer', 'Net amount', 'VAT'].map(cell).join(',')];
 		data.sales.forEach(entry => lines.push(['Invoice', entry.no, entry.date, entry.customer, entry.net.toFixed(2), entry.vat.toFixed(2)].map(cell).join(',')));
 		data.returns.forEach(entry => lines.push(['Return', entry.no, entry.date, entry.customer, (-entry.net).toFixed(2), (-entry.vat).toFixed(2)].map(cell).join(',')));
-		lines.push(['', '', '', 'Net VAT payable', '', (data.salesVat - data.returnVat).toFixed(2)].map(cell).join(','));
+		data.purchases.forEach(entry => lines.push(['Purchase', entry.no, entry.date, entry.customer, entry.net.toFixed(2), entry.vat.toFixed(2)].map(cell).join(',')));
+		lines.push(['', '', '', 'Net VAT payable', '', (data.salesVat - data.returnVat - data.inputVat).toFixed(2)].map(cell).join(','));
 		const link = document.createElement('a');
 		link.href = URL.createObjectURL(new Blob(['\ufeff' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' }));
 		link.download = `vat-report-${vatReportRange.from || 'all'}-${vatReportRange.to || 'all'}.csv`;
@@ -589,10 +695,10 @@ function renderQuotations() {
 	return `<div class="page-heading"><div><div class="eyebrow">Sales preparation</div><h1>Quotations</h1><p>Prepare and track customer quotations before invoicing.</p></div><button class="primary-btn" id="new-quotation-btn">＋ New quotation</button></div><section class="panel"><div class="panel-header"><h2>Quotation history (${state.quotations.length})</h2></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Quotation</th><th>Customer</th><th>Date</th><th>Valid until</th><th>Status</th><th></th></tr></thead><tbody>${rows}</tbody></table></div></section>`;
 }
 
-const ROLE_VIEWS = { admin: ['overview', 'quotations', 'invoices', 'inventory', 'delivery', 'returns', 'customers', 'reports'], cashier: ['overview', 'quotations', 'invoices', 'inventory', 'delivery', 'returns'], storekeeper: ['overview', 'inventory'] };
+const ROLE_VIEWS = { admin: ['overview', 'quotations', 'invoices', 'inventory', 'delivery', 'returns', 'customers', 'purchases', 'reports'], cashier: ['overview', 'quotations', 'invoices', 'inventory', 'delivery', 'returns'], storekeeper: ['overview', 'inventory'] };
 function currentRole() { return sessionStorage.getItem('ledgerly-role') || 'cashier'; }
 function canAccessView(view) { return (ROLE_VIEWS[currentRole()] || ROLE_VIEWS.cashier).includes(view); }
-function render() { if (!canAccessView(state.view)) state.view = (ROLE_VIEWS[currentRole()] || ROLE_VIEWS.cashier)[0]; const title = { overview:'Overview', quotations:'Quotations', invoices:'Invoices', inventory:'Inventory', delivery:'Delivery notes', returns:'Returns', customers:'Customers', reports:'Reports' }[state.view]; document.getElementById('page-title').textContent = title; document.getElementById('app-content').innerHTML = state.view === 'overview' ? renderOverview() : state.view === 'quotations' ? renderQuotations() : state.view === 'invoices' ? renderInvoices() : state.view === 'inventory' ? renderInventory() + renderInventoryHistory() : state.view === 'delivery' ? renderDeliveryNotes() : state.view === 'returns' ? renderReturns() : state.view === 'customers' ? renderCustomers() : state.view === 'reports' ? renderReports() : renderGeneric(state.view); resetDashboardMetrics(); bindViewActions(); syncRoleAccess(); syncOverviewGreeting(); syncCompanyHeader(); }
+function render() { if (!canAccessView(state.view)) state.view = (ROLE_VIEWS[currentRole()] || ROLE_VIEWS.cashier)[0]; const title = { overview:'Overview', quotations:'Quotations', invoices:'Invoices', inventory:'Inventory', delivery:'Delivery notes', returns:'Returns', customers:'Customers', purchases:'Purchases', reports:'Reports' }[state.view]; document.getElementById('page-title').textContent = title; document.getElementById('app-content').innerHTML = state.view === 'overview' ? renderOverview() : state.view === 'quotations' ? renderQuotations() : state.view === 'invoices' ? renderInvoices() : state.view === 'inventory' ? renderInventory() + renderInventoryHistory() : state.view === 'delivery' ? renderDeliveryNotes() : state.view === 'returns' ? renderReturns() : state.view === 'customers' ? renderCustomers() : state.view === 'purchases' ? renderPurchases() : state.view === 'reports' ? renderReports() : renderGeneric(state.view); resetDashboardMetrics(); bindViewActions(); syncRoleAccess(); syncOverviewGreeting(); syncCompanyHeader(); }
 function syncRoleAccess() { const role = currentRole(); document.querySelectorAll('.nav-item[data-view]').forEach(item => { item.hidden = !canAccessView(item.dataset.view); }); const createInvoice = document.getElementById('new-invoice-btn'); if (createInvoice) createInvoice.hidden = !['admin', 'cashier'].includes(role); if (role === 'cashier') document.querySelectorAll('.product-meta').forEach(meta => { const quantity = meta.querySelector('.quantity-input'); if (quantity) meta.replaceChildren(Object.assign(document.createElement('span'), { textContent: `${quantity.value} units` })); }); }
 function bindViewActions() { document.querySelectorAll('[data-view-link]').forEach(el => el.addEventListener('click', () => { if (!canAccessView(el.dataset.viewLink)) return; state.view = el.dataset.viewLink; document.querySelectorAll('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.view === state.view)); render(); })); document.querySelectorAll('.nav-item[data-view]').forEach(el => el.addEventListener('click', () => { if (!canAccessView(el.dataset.view)) return; state.view = el.dataset.view; document.querySelectorAll('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.view === state.view)); render(); })); document.getElementById('new-invoice-btn').onclick = () => { if (['admin', 'cashier'].includes(currentRole())) openModal(); }; document.getElementById('invoice-filter')?.addEventListener('input', event => { const q = event.target.value.toLowerCase(); document.querySelector('#invoice-table tbody').innerHTML = state.invoices.filter(i => `${i.no} ${i.customer}`.toLowerCase().includes(q)).map(inv => `<tr><td><b>${inv.no}</b></td><td><span class="item-name">${inv.customer}</span><span class="item-sub">${inv.date}</span></td><td><span class="status ${statusClass(inv.status)}">${inv.status}</span></td><td>${money(inv.total)} <button class="pdf-invoice" data-invoice="${inv.no}" title="Print or save as PDF" style="color:#08614d;border:1px solid #08614d;border-radius:5px;padding:4px 7px;margin-left:8px;font-size:11px;font-weight:700">PDF</button></td></tr>`).join(''); }); document.getElementById('inventory-filter')?.addEventListener('input', event => { const q = event.target.value.toLowerCase(); document.querySelectorAll('[data-inventory-search]').forEach(item => { item.hidden = !item.dataset.inventorySearch.includes(q); }); }); document.getElementById('returns-filter')?.addEventListener('input', event => { const content = document.querySelector('[data-returns-content]'); if (content) content.hidden = Boolean(event.target.value.trim()); }); }
 function invoiceItemMarkup(item = null, serial = 1) { const inventoryProduct = state.products.find(product => product.id === item?.productId || product.name === item?.product) || null; const itemName = item?.product || inventoryProduct?.name || ''; const quantity = item?.quantity || 1; const price = item?.price ?? inventoryProduct?.price ?? 0; const unit = item?.unit || inventoryProduct?.unit || 'pcs'; const discount = Number(item?.discount) || 0; const line = itemLineValues({ quantity, price, unit, discount }); return `<div class="invoice-item" style="display:grid;grid-template-columns:42px minmax(100px,2fr) 48px 48px 74px 74px 80px 74px 90px 28px;gap:4px;align-items:stretch;width:100%;min-width:0;border-bottom:1px solid #e7ebe7;padding:10px 0;margin-bottom:8px"><span class="invoice-serial" style="${entryValueBoxStyle}"><small style="display:block;color:#78817e">Sl No.</small><b>${serial}</b></span><label style="${entryValueBoxStyle}"><small>Item name</small><input style="${entryValueInputStyle}" class="invoice-product" list="invoice-product-list" value="${itemName}" placeholder="Type an item name" /></label><label style="${entryValueBoxStyle}"><small>Qty</small><input style="${entryValueInputStyle}" class="invoice-quantity" type="number" min="1" step="0.01" value="${quantity}" /></label><label style="${entryValueBoxStyle}"><small>Unit</small><input style="${entryValueInputStyle}" class="invoice-unit" value="${unit}" /></label><label style="${entryValueBoxStyle}"><small>Unit price</small><input style="${entryValueInputStyle}" class="invoice-price" type="number" min="0" step="0.01" value="${price}" /></label><label style="${entryValueBoxStyle}"><small>Discount</small><input style="${entryValueInputStyle}" class="invoice-discount" type="number" min="0" step="0.01" value="${discount}" /></label><div style="${entryValueBoxStyle}"><small>Item price</small><b class="invoice-line-net">${money(line.net)}</b></div><div style="${entryValueBoxStyle}"><small>VAT</small><b class="invoice-line-vat">${money(line.vat)}</b></div><div style="${entryValueBoxStyle}"><small>Total amount</small><b class="invoice-line-amount">${money(line.total)}</b></div><button type="button" class="remove-invoice-item" title="Remove item" style="align-self:center;height:42px;color:#b14f43;border:1px solid #e2b8b0;border-radius:5px;padding:7px 8px">×</button></div>`; }
