@@ -538,14 +538,24 @@ function renderPurchases() {
 	const totals = state.purchases.map(purchase => ({ purchase, ...purchaseTotals(purchase) }));
 	const spend = totals.reduce((sum, row) => sum + row.total, 0);
 	const inputVat = totals.reduce((sum, row) => sum + row.vat, 0);
-	const unpaid = totals.filter(row => row.purchase.status !== 'Paid').reduce((sum, row) => sum + row.total, 0);
+	const unpaid = totals.reduce((sum, row) => sum + row.total - purchasePaid(row.purchase), 0);
 	const supplierRows = state.suppliers.map(supplier => {
 		const own = totals.filter(row => row.purchase.supplier === supplier.name);
-		const owed = own.filter(row => row.purchase.status !== 'Paid').reduce((sum, row) => sum + row.total, 0);
+		const owed = own.reduce((sum, row) => sum + row.total - purchasePaid(row.purchase), 0);
 		return `<tr><td><b>${escHtml(supplier.name)}</b></td><td>${escHtml(supplier.mobile) || '—'}</td><td>${escHtml(supplier.vat) || '—'}</td><td>${money(own.reduce((sum, row) => sum + row.total, 0))}</td><td>${money(owed)}</td><td><button class="delete-supplier" data-supplier="${escHtml(supplier.name)}" style="${btnStyle};color:#b14f43;border-color:#b14f43">Delete</button></td></tr>`;
 	}).join('') || '<tr><td colspan="6">No suppliers added yet.</td></tr>';
-	const purchaseRows = totals.map(({ purchase, net, vat, total }) => `<tr><td><b>${escHtml(purchase.no)}</b></td><td>${escHtml(purchase.date)}</td><td>${escHtml(purchase.supplier)}</td><td>${escHtml(purchase.ref) || '—'}</td><td>${money(net)}</td><td>${money(vat)}</td><td>${money(total)}</td><td><span class="status ${purchase.status === 'Paid' ? 'paid' : 'pending'}">${escHtml(purchase.status)}</span></td><td>${purchase.status === 'Paid' ? '' : `<button class="pay-purchase" data-purchase="${escHtml(purchase.no)}" style="${btnStyle}">Mark paid</button>`}</td></tr>`).join('') || '<tr><td colspan="9">No purchases recorded yet.</td></tr>';
+	const purchaseRows = totals.map(({ purchase, net, vat, total }) => `<tr><td><b>${escHtml(purchase.no)}</b></td><td>${escHtml(purchase.date)}</td><td>${escHtml(purchase.supplier)}</td><td>${escHtml(purchase.ref) || '—'}</td><td>${money(net)}</td><td>${money(vat)}</td><td>${money(total)}</td><td><span class="status ${purchaseStatus(purchase) === 'Paid' ? 'paid' : 'pending'}">${purchaseStatus(purchase)}</span>${purchaseStatus(purchase) === 'Partial' ? `<small style="display:block">Paid ${money(purchasePaid(purchase))} · Due ${money(total - purchasePaid(purchase))}</small>` : ''}</td><td style="white-space:nowrap">${purchaseStatus(purchase) === 'Paid' ? '' : `<button class="pay-purchase" data-purchase="${escHtml(purchase.no)}" style="${btnStyle}">Record payment</button> `}<button class="delete-purchase" data-purchase="${escHtml(purchase.no)}" style="${btnStyle};color:#b14f43;border-color:#b14f43">Delete</button></td></tr>`).join('') || '<tr><td colspan="9">No purchases recorded yet.</td></tr>';
 	return `<div class="page-heading"><div><div class="eyebrow">Procurement</div><h1>Purchases and suppliers</h1><p>Record supplier bills, receive stock and track input VAT.</p></div><span style="display:flex;gap:8px"><button class="primary-btn" id="add-supplier">＋ Add supplier</button><button class="primary-btn" id="add-purchase">＋ New purchase</button></span></div><section class="stats-grid report-stats"><article class="stat-card"><span class="stat-label">Total purchases</span><strong class="stat-value">${money(spend)}</strong><span class="stat-note">${state.purchases.length} purchases</span></article><article class="stat-card"><span class="stat-label">Input VAT</span><strong class="stat-value">${money(inputVat)}</strong><span class="stat-note">Reclaimable VAT</span></article><article class="stat-card"><span class="stat-label">Payable to suppliers</span><strong class="stat-value">${money(unpaid)}</strong><span class="stat-note">Unpaid purchases</span></article><article class="stat-card"><span class="stat-label">Suppliers</span><strong class="stat-value">${state.suppliers.length}</strong><span class="stat-note">In directory</span></article></section><section class="panel"><div class="panel-header"><h2>Purchase history (${state.purchases.length})</h2></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Purchase</th><th>Date</th><th>Supplier</th><th>Supplier invoice</th><th>Net amount</th><th>VAT</th><th>Total</th><th>Status</th><th></th></tr></thead><tbody>${purchaseRows}</tbody></table></div></section><section class="panel" style="margin-top:24px"><div class="panel-header"><h2>Suppliers (${state.suppliers.length})</h2></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Name</th><th>Mobile</th><th>VAT number</th><th>Total purchased</th><th>Payable</th><th></th></tr></thead><tbody>${supplierRows}</tbody></table></div></section>`;
+}
+function purchasePaid(purchase) {
+	const total = Number(purchase.total) || purchaseTotals(purchase).total;
+	const paid = Array.isArray(purchase.payments) ? purchase.payments.reduce((sum, payment) => sum + (Number(payment.amount) || 0), 0) : (purchase.status === 'Paid' ? total : 0);
+	return Math.min(total, paid);
+}
+function purchaseStatus(purchase) {
+	const total = Number(purchase.total) || purchaseTotals(purchase).total;
+	const paid = purchasePaid(purchase);
+	return paid >= total - 0.005 ? 'Paid' : paid > 0 ? 'Partial' : 'Unpaid';
 }
 function purchaseTotals(purchase) {
 	const lines = (purchase.items || []).map(purchaseLineValues);
@@ -575,8 +585,10 @@ document.addEventListener('click', event => {
 			if (!items.length) return 'Add at least one item with a quantity.';
 			if (!state.suppliers.some(supplier => supplier.name.toLowerCase() === supplierName.toLowerCase())) state.suppliers.unshift({ name: supplierName, mobile: '', vat: '', address: '' });
 			const supplier = state.suppliers.find(entry => entry.name.toLowerCase() === supplierName.toLowerCase());
-			const purchase = { no: nextPurchaseNumber(), supplier: supplier.name, ref: data.ref.trim(), date: data.date, status: data.status === 'Paid' ? 'Paid' : 'Unpaid', items, stocked: Boolean(data.stock) };
+			const purchase = { no: nextPurchaseNumber(), supplier: supplier.name, ref: data.ref.trim(), date: data.date, 			status: 'Unpaid', items, stocked: Boolean(data.stock), payments: [] };
 			Object.assign(purchase, purchaseTotals(purchase));
+						if (data.status === 'Paid') purchase.payments.push({ amount: purchase.total, date: data.date });
+						purchase.status = purchaseStatus(purchase);
 			if (purchase.stocked) items.forEach(item => {
 				let product = findInventoryProduct(item.product);
 				if (product) { product.stock = (Number(product.stock) || 0) + item.quantity; }
@@ -600,7 +612,33 @@ document.addEventListener('click', event => {
 	const pay = event.target.closest('.pay-purchase');
 	if (pay) {
 		const purchase = state.purchases.find(entry => entry.no === pay.dataset.purchase);
-		if (purchase) { purchase.status = 'Paid'; saveState(); render(); }
+		if (purchase) {
+			const due = Math.round((purchaseTotals(purchase).total - purchasePaid(purchase)) * 100) / 100;
+			openFormModal(`Payment for ${escHtml(purchase.no)}`, `<p style="margin:0">Outstanding: <b>${money(due)}</b></p><label>Amount<input name="amount" type="number" min="0.01" max="${due}" step="0.01" value="${due}" required style="${fieldStyle}"></label><label>Date<input name="date" type="date" value="${new Date().toISOString().slice(0, 10)}" required style="${fieldStyle}"></label>`, form => {
+				const amount = Math.round((Number(form.elements.amount.value) || 0) * 100) / 100;
+				if (amount <= 0) return 'Enter an amount above zero.';
+				if (amount > due + 0.005) return 'Amount is more than the outstanding balance.';
+				if (!Array.isArray(purchase.payments)) purchase.payments = purchase.status === 'Paid' ? [{ amount: purchaseTotals(purchase).total, date: purchase.date }] : [];
+				purchase.payments.push({ amount, date: form.elements.date.value });
+				purchase.status = purchaseStatus(purchase);
+				saveState(); render();
+			});
+		}
+	}
+	const removePurchase = event.target.closest('.delete-purchase');
+	if (removePurchase) {
+		const purchase = state.purchases.find(entry => entry.no === removePurchase.dataset.purchase);
+		if (purchase && window.confirm(`Delete ${purchase.no}?${purchase.stocked ? ' Stock received by this purchase will be reversed.' : ''}`)) {
+			if (purchase.stocked) purchase.items.forEach(item => {
+				const product = findInventoryProduct(item.product);
+				if (!product) return;
+				const removed = Math.min(Number(product.stock) || 0, item.quantity);
+				product.stock = (Number(product.stock) || 0) - removed;
+				recordInventoryChange(product, -removed, 'Purchase deleted', purchase.no);
+			});
+			state.purchases = state.purchases.filter(entry => entry !== purchase);
+			saveState(); render();
+		}
 	}
 	const removeSupplier = event.target.closest('.delete-supplier');
 	if (removeSupplier && window.confirm(`Delete ${removeSupplier.dataset.supplier}? Existing purchases will be kept.`)) {

@@ -75,7 +75,7 @@
 		// Login
 		'Purchases': 'المشتريات', '▥ Purchases': '▥ المشتريات', 'Procurement': 'المشتريات والتوريد', 'Purchases and suppliers': 'المشتريات والموردون', 'Record supplier bills, receive stock and track input VAT.': 'سجل فواتير الموردين واستلم المخزون وتابع ضريبة المدخلات.',
 		'＋ Add supplier': '＋ إضافة مورد', '＋ New purchase': '＋ مشترى جديد', 'Total purchases': 'إجمالي المشتريات', 'Input VAT': 'ضريبة المدخلات', 'Reclaimable VAT': 'ضريبة قابلة للاسترداد', 'Payable to suppliers': 'مستحق للموردين',
-		'Unpaid purchases': 'مشتريات غير مدفوعة', 'Suppliers': 'الموردون', 'In directory': 'في الدليل', 'Purchase': 'المشترى', 'Supplier': 'المورد', 'Supplier invoice': 'فاتورة المورد', 'Mark paid': 'تحديد كمدفوع',
+		'Unpaid purchases': 'مشتريات غير مدفوعة', 'Suppliers': 'الموردون', 'In directory': 'في الدليل', 'Purchase': 'المشترى', 'Supplier': 'المورد', 'Supplier invoice': 'فاتورة المورد', 'Mark paid': 'تحديد كمدفوع', 'Record payment': 'تسجيل دفعة', 'Partial': 'مدفوعة جزئياً', 'Amount': 'المبلغ', 'Outstanding:': 'المتبقي:', 'Enter an amount above zero.': 'أدخل مبلغاً أكبر من صفر.', 'Amount is more than the outstanding balance.': 'المبلغ أكبر من الرصيد المتبقي.',
 		'Unpaid': 'غير مدفوعة', 'Name': 'الاسم', 'Total purchased': 'إجمالي المشتريات', 'Payable': 'المستحق', 'No suppliers added yet.': 'لم تتم إضافة موردين بعد.', 'No purchases recorded yet.': 'لا توجد مشتريات مسجلة بعد.',
 		'Add supplier': 'إضافة مورد', 'New purchase': 'مشترى جديد', 'Supplier name': 'اسم المورد', 'Supplier invoice no.': 'رقم فاتورة المورد', 'Add received items to inventory stock': 'إضافة الأصناف المستلمة إلى المخزون', '＋ Add item': '＋ إضافة صنف',
 		'Output less returns and input VAT': 'المخرجات ناقص المرتجعات وضريبة المدخلات',
