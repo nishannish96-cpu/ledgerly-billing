@@ -1,7 +1,9 @@
 import hashlib
 import json
+import logging
 import math
 import os
+import re
 import secrets
 import smtplib
 import sqlite3
@@ -59,6 +61,9 @@ def initialise_database():
                 expires_at INTEGER NOT NULL
             )
         ''')
+        registration_columns = {row['name'] for row in database.execute('PRAGMA table_info(registration_codes)')}
+        if 'attempts' not in registration_columns:
+            database.execute('ALTER TABLE registration_codes ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0')
         database.execute('''
             CREATE TABLE IF NOT EXISTS user_states (
                 user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
@@ -142,6 +147,49 @@ def restricted_workspace(state, role, existing_state=None):
         new_returns = [record for record in state.get('returns', []) if str(record.get('no')) not in existing_returns]
         merged['invoices'] = [*existing_state.get('invoices', []), *new_invoices]
         merged['returns'] = [*existing_state.get('returns', []), *new_returns]
+        invoices_by_number = {str(invoice.get('no')): invoice for invoice in merged['invoices'] if isinstance(invoice, dict)}
+        existing_payments = [payment for payment in existing_state.get('invoicePayments', []) if isinstance(payment, dict)]
+        payment_ids = {str(payment.get('id')) for payment in existing_payments}
+        paid_totals = {}
+        for payment in existing_payments:
+            invoice_number = str(payment.get('invoiceNo', ''))
+            try:
+                amount = float(payment.get('amount') or 0)
+            except (TypeError, ValueError):
+                amount = 0
+            if math.isfinite(amount) and amount > 0:
+                paid_totals[invoice_number] = paid_totals.get(invoice_number, 0) + amount
+        accepted_payments = []
+        for payment in state.get('invoicePayments', []):
+            if not isinstance(payment, dict) or not payment.get('id'):
+                continue
+            payment_id = str(payment['id'])
+            invoice_number = str(payment.get('invoiceNo', ''))
+            invoice = invoices_by_number.get(invoice_number)
+            if payment_id in payment_ids or not invoice:
+                continue
+            try:
+                amount = round(float(payment.get('amount') or 0), 2)
+                total = float(invoice.get('total') or 0)
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(amount) or amount <= 0 or not math.isfinite(total):
+                continue
+            already_paid = total if invoice.get('status') == 'Paid' else paid_totals.get(invoice_number, 0)
+            if amount > max(0, total - already_paid) + 0.005:
+                continue
+            accepted = {
+                'id': payment_id,
+                'invoiceNo': invoice_number,
+                'amount': amount,
+                'date': str(payment.get('date', '')),
+                'method': str(payment.get('method', 'Cash')),
+                'reference': str(payment.get('reference', '')),
+            }
+            accepted_payments.append(accepted)
+            paid_totals[invoice_number] = paid_totals.get(invoice_number, 0) + amount
+            payment_ids.add(payment_id)
+        merged['invoicePayments'] = [*existing_payments, *accepted_payments]
         stock_changes = {}
         def record_stock_change(item, factor):
             try:
@@ -176,20 +224,21 @@ def restricted_workspace(state, role, existing_state=None):
 
 
 def send_verification_email(email, code):
-    host = os.environ.get('SMTP_HOST')
-    if not host:
-        return False
+    host = os.environ.get('SMTP_HOST', 'smtp.gmail.com')
+    username = os.environ.get('SMTP_USER')
+    password = os.environ.get('SMTP_PASSWORD')
+    if not username or not password:
+        raise RuntimeError('Email verification is not configured. Set SMTP_USER and SMTP_PASSWORD.')
     message = EmailMessage()
     message['Subject'] = 'Verify your Ledgerly account'
-    message['From'] = os.environ.get('SMTP_FROM', os.environ.get('SMTP_USER', 'no-reply@ledgerly.local'))
+    message['From'] = os.environ.get('SMTP_FROM', username)
     message['To'] = email
     message.set_content(f'Your Ledgerly verification code is {code}. It expires in 10 minutes.')
     port = int(os.environ.get('SMTP_PORT', '587'))
     with smtplib.SMTP(host, port, timeout=15) as smtp:
         smtp.starttls()
-        smtp.login(os.environ['SMTP_USER'], os.environ['SMTP_PASSWORD'])
+        smtp.login(username, password)
         smtp.send_message(message)
-    return True
 
 
 class LedgerlyHandler(SimpleHTTPRequestHandler):
@@ -235,7 +284,7 @@ class LedgerlyHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
-        if path not in ('/api/register', '/api/verify-registration', '/api/login', '/api/logout', '/api/update-user', '/api/update-user-role', '/api/state'):
+        if path not in ('/api/register', '/api/verify-registration', '/api/resend-registration-code', '/api/login', '/api/logout', '/api/update-user', '/api/update-user-role', '/api/state'):
             return super().do_POST()
         try:
             payload = self.read_json()
@@ -263,7 +312,12 @@ class LedgerlyHandler(SimpleHTTPRequestHandler):
                     return self.send_json(400, {'error': 'Email and verification code are required.'})
                 with connection() as database:
                     pending = database.execute('SELECT * FROM registration_codes WHERE email = ?', (username,)).fetchone()
-                    if not pending or pending['expires_at'] < int(__import__('time').time()) or not secrets.compare_digest(code, pending['code']):
+                    if not pending or pending['expires_at'] < int(time.time()) or pending['attempts'] >= 5:
+                        if pending:
+                            database.execute('DELETE FROM registration_codes WHERE email = ?', (username,))
+                        return self.send_json(400, {'error': 'That verification code is invalid or expired.'})
+                    if not secrets.compare_digest(code, pending['code']):
+                        database.execute('UPDATE registration_codes SET attempts = attempts + 1 WHERE email = ?', (username,))
                         return self.send_json(400, {'error': 'That verification code is invalid or expired.'})
                     if database.execute('SELECT 1 FROM users WHERE username = ?', (username,)).fetchone():
                         return self.send_json(409, {'error': 'That email is already registered.'})
@@ -272,6 +326,23 @@ class LedgerlyHandler(SimpleHTTPRequestHandler):
                     database.execute('DELETE FROM registration_codes WHERE email = ?', (username,))
                     user = database.execute('SELECT * FROM users WHERE username = ?', (username,)).fetchone()
                 return self.send_json(201, {'user': public_user(user)})
+            if path == '/api/resend-registration-code':
+                if not username:
+                    return self.send_json(400, {'error': 'Email is required.'})
+                with connection() as database:
+                    pending = database.execute('SELECT * FROM registration_codes WHERE email = ?', (username,)).fetchone()
+                    if not pending:
+                        return self.send_json(404, {'error': 'No pending account verification was found. Please create your account again.'})
+                    code = f'{secrets.randbelow(1_000_000):06d}'
+                    expires_at = int(time.time()) + 600
+                    database.execute('UPDATE registration_codes SET code = ?, expires_at = ?, attempts = 0 WHERE email = ?', (code, expires_at, username))
+                    try:
+                        send_verification_email(username, code)
+                    except (OSError, RuntimeError, smtplib.SMTPException, ValueError):
+                        logging.exception('Unable to resend account verification email')
+                        database.execute('UPDATE registration_codes SET code = ?, expires_at = ?, attempts = ? WHERE email = ?', (pending['code'], pending['expires_at'], pending['attempts'], username))
+                        return self.send_json(503, {'error': 'Unable to send the verification email. Check Gmail SMTP configuration and try again.'})
+                return self.send_json(200, {'verification_required': True})
             if path == '/api/state':
                 state = payload.get('state')
                 if not isinstance(state, dict):
@@ -365,12 +436,27 @@ class LedgerlyHandler(SimpleHTTPRequestHandler):
                         if not company_password or not secrets.compare_digest(company_digest, company_owner['password_hash']):
                             return self.send_json(403, {'error': 'Company administrator password is incorrect.'})
                         company_id = company_owner['company_id']
-                    else:
-                        company_id = self.create_company(database, username)
-                        requested_role = 'admin'
-                    database.execute('INSERT INTO users (username, password_hash, password_salt, first_name, last_name, role, company_id, is_owner) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', (username, digest, salt, first_name, last_name, requested_role, company_id, int(not company_username)))
-                    user = database.execute('SELECT * FROM users WHERE username = ?', (username,)).fetchone()
-                    return self.send_json(201, {'user': public_user(user)})
+                        database.execute('INSERT INTO users (username, password_hash, password_salt, first_name, last_name, role, company_id, is_owner) VALUES (?, ?, ?, ?, ?, ?, ?, 0)', (username, digest, salt, first_name, last_name, requested_role, company_id))
+                        user = database.execute('SELECT * FROM users WHERE username = ?', (username,)).fetchone()
+                        return self.send_json(201, {'user': public_user(user)})
+                    if not re.fullmatch(r'[^@\s]+@[^@\s]+\.[^@\s]+', username):
+                        return self.send_json(400, {'error': 'Enter a valid email address to receive your verification code.'})
+                    code = f'{secrets.randbelow(1_000_000):06d}'
+                    expires_at = int(time.time()) + 600
+                    database.execute(
+                        'INSERT INTO registration_codes (email, password_hash, password_salt, first_name, last_name, code, expires_at) '
+                        'VALUES (?, ?, ?, ?, ?, ?, ?) '
+                        'ON CONFLICT(email) DO UPDATE SET password_hash = excluded.password_hash, password_salt = excluded.password_salt, '
+                        'first_name = excluded.first_name, last_name = excluded.last_name, code = excluded.code, expires_at = excluded.expires_at, attempts = 0',
+                        (username, digest, salt, first_name, last_name, code, expires_at),
+                    )
+                    try:
+                        send_verification_email(username, code)
+                    except (OSError, RuntimeError, smtplib.SMTPException, ValueError):
+                        logging.exception('Unable to send account verification email')
+                        database.execute('DELETE FROM registration_codes WHERE email = ? AND code = ?', (username, code))
+                        return self.send_json(503, {'error': 'Unable to send the verification email. Check Gmail SMTP configuration and try again.'})
+                    return self.send_json(202, {'verification_required': True})
                 if not user:
                     return self.send_json(401, {'error': 'Invalid username or password.'})
                 _, digest = password_hash(password, user['password_salt'])
@@ -397,7 +483,7 @@ class LedgerlyHandler(SimpleHTTPRequestHandler):
         try:
             saved_state = json.loads(row['state_json'])
             if user['role'] == 'cashier':
-                fields = ('company', 'invoices', 'quotations', 'deliveryNotes', 'returns', 'products', 'customers')
+                fields = ('company', 'invoices', 'invoicePayments', 'quotations', 'deliveryNotes', 'returns', 'products', 'customers')
                 saved_state = {key: saved_state[key] for key in fields if key in saved_state}
             elif user['role'] == 'storekeeper':
                 fields = ('company', 'products', 'inventoryHistory')

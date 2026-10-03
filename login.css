@@ -38,8 +38,8 @@ body {
 form { display: grid; gap: 18px; }
 form[hidden] { display: none; }
 label { display: grid; gap: 8px; color: #465650; font-size: 13px; font-weight: 600; }
-input[type="text"], input[type="password"] { width: 100%; padding: 14px 15px; border: 1px solid var(--line); border-radius: 7px; color: var(--ink); background: #fff; font: inherit; outline: none; }
-input[type="text"]:focus, input[type="password"]:focus { border-color: var(--green); box-shadow: 0 0 0 3px rgba(8, 97, 77, 0.1); }
+input[type="text"], input[type="email"], input[type="password"] { width: 100%; padding: 14px 15px; border: 1px solid var(--line); border-radius: 7px; color: var(--ink); background: #fff; font: inherit; outline: none; }
+input[type="text"]:focus, input[type="email"]:focus, input[type="password"]:focus { border-color: var(--green); box-shadow: 0 0 0 3px rgba(8, 97, 77, 0.1); }
 .password-field { position: relative; }
 .password-field input { padding-right: 46px; }
 .password-toggle { position: absolute; top: 50%; right: 10px; display: grid; width: 30px; height: 30px; place-items: center; padding: 0; border: 0; border-radius: 5px; color: var(--muted); background: transparent; font-size: 16px; cursor: pointer; transform: translateY(-50%); }

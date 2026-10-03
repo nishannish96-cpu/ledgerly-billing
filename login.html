@@ -9,7 +9,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="login.css?v=2" />
+  <link rel="stylesheet" href="login.css?v=3" />
 </head>
 <body>
   <script>
@@ -47,29 +47,42 @@
           <p class="login-error" id="login-error" role="alert" hidden>Enter the demo credentials to continue.</p>
         </form>
         <form id="create-form" hidden>
-          <label>Username<input id="create-username" type="text" autocomplete="username" placeholder="Choose a username" required /></label>
+          <label>Email<input id="create-username" type="email" autocomplete="email" maxlength="254" placeholder="Enter your email address" required /></label>
           <label>Password<div class="password-field"><input id="create-password" type="password" autocomplete="new-password" placeholder="Create a password" minlength="6" required /><button class="password-toggle" type="button" data-password-target="create-password" aria-label="Show password">◉</button></div></label>
           <label>Confirm password<div class="password-field"><input id="create-password-confirm" type="password" autocomplete="new-password" placeholder="Repeat your password" required /><button class="password-toggle" type="button" data-password-target="create-password-confirm" aria-label="Show password">◉</button></div></label>
           <button class="login-button" id="create-submit" type="submit">Create account <span aria-hidden="true">→</span></button>
           <p class="login-error" id="create-error" role="alert" hidden></p>
-          <p class="login-success" id="create-success" role="status" hidden></p>
         </form>
+        <form id="verify-form" hidden>
+          <p class="login-copy">Enter the 6-digit code we emailed to <strong id="verification-email"></strong>. The code expires in 10 minutes.</p>
+          <label>Verification code<input id="verification-code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" placeholder="000000" required /></label>
+          <button class="login-button" type="submit">Verify email <span aria-hidden="true">→</span></button>
+          <button class="account-switch-button" id="resend-code" type="button">Send a new code</button>
+          <p class="login-error" id="verify-error" role="alert" hidden></p>
+          <p class="login-success" id="verify-success" role="status" hidden></p>
+        </form>
+        <p class="login-success" id="login-success" role="status" hidden></p>
         <p class="account-switch"><span id="switch-copy">Need an account?</span> <button class="account-switch-button" type="button" id="create-account-link">Create account</button></p>
         <p class="demo-note">Local mode credentials can be changed from Settings.</p>
       </div>
       <p class="copyright">Ledgerly workspace · Local mode</p>
     </section>
   </main>
-  <script>if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js?v=64');</script>
+  <script>if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js?v=65');</script>
   <script>
     const form = document.getElementById('login-form');
     const createForm = document.getElementById('create-form');
+    const verifyForm = document.getElementById('verify-form');
     const error = document.getElementById('login-error');
+    const loginSuccess = document.getElementById('login-success');
     const createError = document.getElementById('create-error');
-    const createSuccess = document.getElementById('create-success');
+    const verifyError = document.getElementById('verify-error');
+    const verifySuccess = document.getElementById('verify-success');
+    const accountSwitch = document.querySelector('.account-switch');
     const forgotLink = document.getElementById('forgot-link');
     const createAccountLink = document.getElementById('create-account-link');
     const switchCopy = document.getElementById('switch-copy');
+    let pendingVerificationEmail = '';
 
     document.querySelectorAll('.password-toggle').forEach(toggle => {
       toggle.addEventListener('click', () => {
@@ -92,9 +105,13 @@
     function showCreateForm(showCreate) {
       form.hidden = showCreate;
       createForm.hidden = !showCreate;
+      verifyForm.hidden = true;
+      accountSwitch.hidden = false;
       error.hidden = true;
+      loginSuccess.hidden = true;
       createError.hidden = true;
-      createSuccess.hidden = true;
+      verifyError.hidden = true;
+      verifySuccess.hidden = true;
       switchCopy.textContent = showCreate ? 'Already have an account?' : 'Need an account?';
       createAccountLink.textContent = showCreate ? 'Sign in' : 'Create one';
       if (showCreate) document.getElementById('create-username').focus();
@@ -112,6 +129,7 @@
       event.preventDefault();
       const email = document.getElementById('login-email').value.trim().toLowerCase();
       const password = document.getElementById('login-password').value;
+      loginSuccess.hidden = true;
       try {
         const result = await requestAccount('/api/login', email, password);
         const user = result.user;
@@ -140,24 +158,63 @@
       const password = document.getElementById('create-password').value;
       const confirmation = document.getElementById('create-password-confirm').value;
       createError.hidden = true;
-      createSuccess.hidden = true;
+      verifyError.hidden = true;
+      verifySuccess.hidden = true;
       if (password !== confirmation) {
         createError.textContent = 'Passwords do not match.';
         createError.hidden = false;
         return;
       }
       try {
-        await requestAccount('/api/register', username, password);
-        localStorage.removeItem(`ledgerly-state:${username}`);
-        sessionStorage.setItem('ledgerly-new-account', username);
+        const result = await requestAccount('/api/register', username, password);
+        if (!result.verification_required) throw new Error('The server did not request email verification. Please try again.');
+        pendingVerificationEmail = username;
+        document.getElementById('verification-email').textContent = username;
+        document.getElementById('verification-code').value = '';
         createForm.reset();
-        showCreateForm(false);
-        document.getElementById('login-email').value = username;
-        createSuccess.textContent = 'Account created. Sign in to continue.';
-        createSuccess.hidden = false;
+        form.hidden = true;
+        createForm.hidden = true;
+        verifyForm.hidden = false;
+        accountSwitch.hidden = true;
+        document.getElementById('verification-code').focus();
       } catch (requestError) {
         createError.textContent = requestError.message;
         createError.hidden = false;
+      }
+    });
+
+    verifyForm.addEventListener('submit', async event => {
+      event.preventDefault();
+      verifyError.hidden = true;
+      verifySuccess.hidden = true;
+      const code = document.getElementById('verification-code').value.trim();
+      try {
+        await requestAccount('/api/verify-registration', pendingVerificationEmail, '', { code });
+        localStorage.removeItem(`ledgerly-state:${pendingVerificationEmail}`);
+        sessionStorage.setItem('ledgerly-new-account', pendingVerificationEmail);
+        verifyForm.hidden = true;
+        form.hidden = false;
+        accountSwitch.hidden = false;
+        document.getElementById('login-email').value = pendingVerificationEmail;
+        document.getElementById('login-password').focus();
+        loginSuccess.textContent = 'Email verified. Your account is ready—sign in to continue.';
+        loginSuccess.hidden = false;
+      } catch (requestError) {
+        verifyError.textContent = requestError.message;
+        verifyError.hidden = false;
+      }
+    });
+
+    document.getElementById('resend-code').addEventListener('click', async () => {
+      verifyError.hidden = true;
+      verifySuccess.hidden = true;
+      try {
+        await requestAccount('/api/resend-registration-code', pendingVerificationEmail, '');
+        verifySuccess.textContent = 'A new verification code has been sent.';
+        verifySuccess.hidden = false;
+      } catch (requestError) {
+        verifyError.textContent = requestError.message;
+        verifyError.hidden = false;
       }
     });
 
