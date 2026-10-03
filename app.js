@@ -435,6 +435,56 @@ function zatcaQrSvg({ date, total, vat }) {
 	qr.make();
 	return qr.createSvgTag(3, 2);
 }
+const BACKUP_KEYS = ['quotations', 'invoices', 'invoicePayments', 'products', 'deliveryNotes', 'customers', 'returns', 'inventoryHistory', 'company'];
+function downloadFile(name, content, type) {
+	const link = document.createElement('a');
+	link.href = URL.createObjectURL(new Blob([content], { type }));
+	link.download = name;
+	link.click();
+	URL.revokeObjectURL(link.href);
+}
+function csvText(rows) {
+	const cell = value => `"${String(value ?? '').replace(/"/g, '""')}"`;
+	return '\ufeff' + rows.map(row => row.map(cell).join(',')).join('\r\n');
+}
+function backupMarkup() {
+	const btn = 'color:#08614d;border:1px solid #08614d;border-radius:5px;padding:6px 10px;font-weight:700';
+	return `<section class="panel" style="margin-top:24px"><div class="panel-header"><h2>Backup and export</h2></div><div style="padding:16px;display:flex;gap:8px;flex-wrap:wrap;align-items:center"><button type="button" id="backup-download" style="${btn}">Download full backup (JSON)</button><label style="${btn};cursor:pointer">Restore from backup<input type="file" id="backup-restore" accept="application/json,.json" hidden></label><button type="button" class="export-csv" data-export="invoices" style="${btn}">Invoices CSV</button><button type="button" class="export-csv" data-export="customers" style="${btn}">Customers CSV</button><button type="button" class="export-csv" data-export="products" style="${btn}">Products CSV</button></div><p style="padding:0 16px 16px;color:#78817e;font-size:12px">Restore merges the backup into your current data; existing records with the same number or name are overwritten by the backup.</p></section>`;
+}
+document.addEventListener('click', event => {
+	const today = new Date().toISOString().slice(0, 10);
+	if (event.target.closest('#backup-download')) {
+		const data = Object.fromEntries(BACKUP_KEYS.map(key => [key, state[key]]));
+		downloadFile(`ledgerly-backup-${today}.json`, JSON.stringify({ app: 'ledgerly', version: 1, exportedAt: new Date().toISOString(), data }, null, 2), 'application/json');
+	}
+	const exportButton = event.target.closest('.export-csv');
+	if (exportButton) {
+		const kind = exportButton.dataset.export;
+		let rows;
+		if (kind === 'invoices') rows = [['Invoice', 'Date', 'Customer', 'Status', 'Payment method', 'Subtotal', 'Total']].concat(state.invoices.map(i => [i.no, i.date, i.customer, i.status, i.paymentMethod || '', Number(i.subtotal ?? i.total / 1.15).toFixed(2), Number(i.total).toFixed(2)]));
+		else if (kind === 'customers') rows = [['Name', 'Mobile', 'Email', 'VAT', 'Address']].concat(state.customers.map(c => [c.name, c.mobile || '', c.email || '', c.vat || '', c.address || '']));
+		else rows = [['Name', 'SKU', 'Unit', 'Price', 'Stock']].concat(state.products.map(p => [p.name, p.sku || '', p.unit || '', p.price, p.stock]));
+		downloadFile(`ledgerly-${kind}-${today}.csv`, csvText(rows), 'text/csv;charset=utf-8');
+	}
+});
+document.addEventListener('change', async event => {
+	if (!event.target.matches('#backup-restore')) return;
+	const file = event.target.files[0];
+	event.target.value = '';
+	if (!file) return;
+	try {
+		const backup = JSON.parse(await file.text());
+		if (backup.app !== 'ledgerly' || !backup.data) throw new Error('invalid');
+		if (!window.confirm('Restore this backup? It will be merged into your current data.')) return;
+		const incoming = Object.fromEntries(BACKUP_KEYS.filter(key => backup.data[key] != null).map(key => [key, backup.data[key]]));
+		Object.assign(state, mergeWorkspaceStates(stateSnapshot(), incoming));
+		await saveState();
+		window.alert('Backup restored.');
+		render();
+	} catch (error) {
+		window.alert('This file is not a valid Ledgerly backup.');
+	}
+});
 const vatReportRange = { from: '', to: '' };
 function vatReportData() {
 	const from = vatReportRange.from ? new Date(`${vatReportRange.from}T00:00:00`) : null;
@@ -497,7 +547,7 @@ function renderReports() {
 	const stockOuttake = Math.abs(state.inventoryHistory.filter(entry => entry.change < 0).reduce((sum, entry) => sum + entry.change, 0));
 	const totalReturns = state.returns.reduce((sum, returned) => sum + (Number(returned.refundTotal) || returnNetTotal(returned) * 1.15), 0);
 	const movementRows = state.inventoryHistory.map(entry => `<tr><td>${entry.date}</td><td><b>${entry.product}</b></td><td style="color:${entry.change >= 0 ? 'var(--green)' : '#b14f43'};font-weight:700">${entry.change >= 0 ? 'Intake +' : 'Outtake '}${Math.abs(entry.change)}</td><td>${entry.reason}</td><td>${entry.reference || '—'}</td></tr>`).join('');
-	return `<div class="page-heading"><div><div class="eyebrow">Business intelligence</div><h1>Reports</h1><p>Track sales, stock movement, and customer returns.</p></div></div><section class="stats-grid report-stats"><article class="stat-card"><span class="stat-label">1. Total sales</span><strong class="stat-value">${money(totalSales)}</strong><span class="stat-note">${state.invoices.length} invoices</span></article><article class="stat-card"><span class="stat-label">2. Stock intake</span><strong class="stat-value">${stockIntake}</strong><span class="stat-note">Units received</span></article><article class="stat-card"><span class="stat-label">2. Stock outtake</span><strong class="stat-value">${stockOuttake}</strong><span class="stat-note">Units sold or removed</span></article><article class="stat-card"><span class="stat-label">3. Total return</span><strong class="stat-value">${money(totalReturns)}</strong><span class="stat-note">${state.returns.length} return records</span></article></section><section class="panel report-movement"><div class="panel-header"><h2>Stock intake and outtake</h2></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Date</th><th>Item</th><th>Movement</th><th>Reason</th><th>Reference</th></tr></thead><tbody>${movementRows || '<tr><td colspan="5">No stock movement recorded yet.</td></tr>'}</tbody></table></div></section>${vatReportMarkup()}`;
+	return `<div class="page-heading"><div><div class="eyebrow">Business intelligence</div><h1>Reports</h1><p>Track sales, stock movement, and customer returns.</p></div></div><section class="stats-grid report-stats"><article class="stat-card"><span class="stat-label">1. Total sales</span><strong class="stat-value">${money(totalSales)}</strong><span class="stat-note">${state.invoices.length} invoices</span></article><article class="stat-card"><span class="stat-label">2. Stock intake</span><strong class="stat-value">${stockIntake}</strong><span class="stat-note">Units received</span></article><article class="stat-card"><span class="stat-label">2. Stock outtake</span><strong class="stat-value">${stockOuttake}</strong><span class="stat-note">Units sold or removed</span></article><article class="stat-card"><span class="stat-label">3. Total return</span><strong class="stat-value">${money(totalReturns)}</strong><span class="stat-note">${state.returns.length} return records</span></article></section><section class="panel report-movement"><div class="panel-header"><h2>Stock intake and outtake</h2></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Date</th><th>Item</th><th>Movement</th><th>Reason</th><th>Reference</th></tr></thead><tbody>${movementRows || '<tr><td colspan="5">No stock movement recorded yet.</td></tr>'}</tbody></table></div></section>${vatReportMarkup()}${backupMarkup()}`;
 }
 
 function renderGeneric(view) { const config = { quotations: ['Quotations', 'Prepare and track customer quotations before invoicing.', '＋ New quotation'], delivery: ['Delivery notes', 'Dispatch orders with proof of handover.', '＋ New delivery note'], returns: ['Returns & stock returns', 'Track customer returns and put good stock back where it belongs.', '＋ Record return'], customers: ['Customers', 'Your customer directory and account balances live here.', '＋ Add customer'], reports: ['Reports', 'Sales, VAT, stock movement, and return reporting.', 'Export report'] }[view]; const search = view === 'returns' ? '<input class="filter-input" id="returns-filter" placeholder="⌕ Search returns" />' : ''; return `<div class="page-heading"><div><div class="eyebrow">Operations</div><h1>${config[0]}</h1><p>${config[1]}</p></div><button class="primary-btn">${config[2]}</button></div><section class="panel"><div class="panel-header"><h2>${view === 'returns' ? 'Returns' : view === 'quotations' ? 'Quotations' : 'Workspace'}</h2>${search}</div><div class="empty-state" data-returns-content><div class="stat-icon bg-mint" style="position:static;margin:0 auto 16px;font-size:22px">${view === 'returns' ? '↩' : view === 'delivery' ? '⌁' : '◈'}</div><h3>${view === 'returns' ? 'Returns are under control' : view === 'quotations' ? 'Your quotations are ready' : 'Your workspace is ready'}</h3><p>Use the action above to add your first record. This module is connected to the same inventory and VAT workflow.</p></div></section>`; }
