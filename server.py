@@ -98,6 +98,17 @@ def initialise_database():
             )
         ''')
         database.execute('''
+            CREATE TABLE IF NOT EXISTS activity_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL,
+                username TEXT NOT NULL,
+                action TEXT NOT NULL,
+                detail TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        database.execute('CREATE INDEX IF NOT EXISTS idx_activity_company ON activity_log (company_id, id DESC)')
+        database.execute('''
             CREATE TABLE IF NOT EXISTS auth_sessions (
                 token_hash TEXT PRIMARY KEY,
                 user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -141,6 +152,54 @@ def create_session(database, user):
     database.execute('DELETE FROM auth_sessions WHERE expires_at <= ?', (int(time.time()),))
     database.execute('INSERT INTO auth_sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)', (session_token_hash(token), user['id'], expires_at))
     return token
+
+
+ACTIVITY_COLLECTIONS = {
+    'invoices': ('no', 'Invoice'),
+    'quotations': ('no', 'Quotation'),
+    'deliveryNotes': ('no', 'Delivery note'),
+    'returns': ('no', 'Return'),
+    'customers': ('name', 'Customer'),
+    'products': ('id', 'Item'),
+    'invoicePayments': ('id', 'Payment'),
+}
+ACTIVITY_RETENTION = 5000
+
+
+def log_activity(database, company_id, username, action, detail=''):
+    if not company_id:
+        return
+    database.execute('INSERT INTO activity_log (company_id, username, action, detail) VALUES (?, ?, ?, ?)', (company_id, username, action, str(detail)[:300]))
+    database.execute(
+        'DELETE FROM activity_log WHERE company_id = ? AND id <= (SELECT id FROM activity_log WHERE company_id = ? ORDER BY id DESC LIMIT 1 OFFSET ?)',
+        (company_id, company_id, ACTIVITY_RETENTION),
+    )
+
+
+def describe_state_changes(previous, current):
+    changes = []
+    for key, (id_field, label) in ACTIVITY_COLLECTIONS.items():
+        old = {str(r.get(id_field)): r for r in previous.get(key) or [] if isinstance(r, dict)}
+        new = {str(r.get(id_field)): r for r in current.get(key) or [] if isinstance(r, dict)}
+        for record_id, record in new.items():
+            if record_id not in old:
+                extra = f" for {record.get('customer')}" if record.get('customer') and key != 'customers' else ''
+                changes.append((f'{label} created', f'{record_id}{extra}'))
+            elif record != old[record_id]:
+                detail = record_id
+                if key == 'products':
+                    notes = [f"{field} {old[record_id].get(field)} → {record.get(field)}" for field in ('stock', 'price') if old[record_id].get(field) != record.get(field)]
+                    if notes:
+                        detail = f"{record.get('name', record_id)}: {', '.join(notes)}"
+                elif key == 'invoices' and old[record_id].get('status') != record.get('status'):
+                    detail = f"{record_id}: status {old[record_id].get('status')} → {record.get('status')}"
+                changes.append((f'{label} updated', detail))
+        for record_id in old:
+            if record_id not in new:
+                changes.append((f'{label} deleted', record_id))
+    if previous.get('company') != current.get('company') and current.get('company'):
+        changes.append(('Company profile updated', ''))
+    return changes
 
 
 def restricted_workspace(state, role, existing_state=None):
@@ -402,13 +461,14 @@ class LedgerlyHandler(SimpleHTTPRequestHandler):
                     if not secrets.compare_digest(session_token_hash(code), pending['code_hash']):
                         database.execute('UPDATE password_resets SET attempts = attempts + 1 WHERE email = ?', (username,))
                         return self.send_json(400, {'error': 'That reset code is invalid or expired.'})
-                    account = database.execute('SELECT id FROM users WHERE username = ?', (username,)).fetchone()
+                    account = database.execute('SELECT id, company_id, username FROM users WHERE username = ?', (username,)).fetchone()
                     if not account:
                         return self.send_json(400, {'error': 'That reset code is invalid or expired.'})
                     salt, digest = password_hash(password)
                     database.execute('UPDATE users SET password_hash = ?, password_salt = ? WHERE id = ?', (digest, salt, account['id']))
                     database.execute('DELETE FROM auth_sessions WHERE user_id = ?', (account['id'],))
                     database.execute('DELETE FROM password_resets WHERE email = ?', (username,))
+                    log_activity(database, account['company_id'], account['username'], 'Password reset')
                 return self.send_json(200, {'password_reset': True})
             if path == '/api/state':
                 state = payload.get('state')
@@ -430,6 +490,12 @@ class LedgerlyHandler(SimpleHTTPRequestHandler):
                         (user['company_id'], json.dumps(saved_state)),
                     )
                     revision = database.execute('SELECT revision FROM company_states WHERE company_id = ?', (user['company_id'],)).fetchone()['revision']
+                    if previous_state:
+                        changes = describe_state_changes(previous_state, saved_state)
+                        for action, detail in changes[:50]:
+                            log_activity(database, user['company_id'], user['username'], action, detail)
+                        if len(changes) > 50:
+                            log_activity(database, user['company_id'], user['username'], 'Bulk update', f'{len(changes) - 50} more changes')
                     company_name = str((saved_state.get('company') or {}).get('name') or '').strip()
                     if company_name:
                         database.execute('UPDATE companies SET name = ? WHERE id = ?', (company_name, user['company_id']))
@@ -457,6 +523,7 @@ class LedgerlyHandler(SimpleHTTPRequestHandler):
                         return self.send_json(400, {'error': 'A company must keep at least one Admin.'})
                     database.execute('UPDATE users SET role = ? WHERE id = ?', (requested_role, target['id']))
                     updated_user = database.execute('SELECT * FROM users WHERE id = ?', (target['id'],)).fetchone()
+                    log_activity(database, admin['company_id'], admin['username'], 'User role changed', f"{target['username']}: {target['role']} → {requested_role}")
                 return self.send_json(200, {'user': public_user(updated_user)})
             if not username:
                 return self.send_json(400, {'error': 'Username is required.'})
@@ -505,6 +572,7 @@ class LedgerlyHandler(SimpleHTTPRequestHandler):
                         company_id = company_owner['company_id']
                         database.execute('INSERT INTO users (username, password_hash, password_salt, first_name, last_name, role, company_id, is_owner) VALUES (?, ?, ?, ?, ?, ?, ?, 0)', (username, digest, salt, first_name, last_name, requested_role, company_id))
                         user = database.execute('SELECT * FROM users WHERE username = ?', (username,)).fetchone()
+                        log_activity(database, company_id, company_username, 'User added', f'{username} as {requested_role}')
                         return self.send_json(201, {'user': public_user(user)})
                     if not re.fullmatch(r'[^@\s]+@[^@\s]+\.[^@\s]+', username):
                         return self.send_json(400, {'error': 'Enter a valid email address to receive your verification code.'})
@@ -530,6 +598,7 @@ class LedgerlyHandler(SimpleHTTPRequestHandler):
                 if not secrets.compare_digest(digest, user['password_hash']):
                     return self.send_json(401, {'error': 'Invalid username or password.'})
                 login_result = {'token': create_session(database, user), 'user': public_user(user)}
+                log_activity(database, user['company_id'], user['username'], 'Signed in')
                 secure = '; Secure' if self.headers.get('X-Forwarded-Proto') == 'https' else ''
                 login_cookie = f"ledgerly-session={login_result['token']}; Path=/; HttpOnly; SameSite=Lax; Max-Age={SESSION_TTL_SECONDS}{secure}"
             return self.send_json(200, login_result, {'Set-Cookie': login_cookie})
@@ -538,6 +607,19 @@ class LedgerlyHandler(SimpleHTTPRequestHandler):
 
     def do_GET(self):
         request = urlparse(self.path)
+        if request.path == '/api/activity':
+            with connection() as database:
+                user = self.authenticated_user(database)
+                if not user:
+                    return self.send_json(401, {'error': 'Please sign in again.'})
+                if user['role'] != 'admin':
+                    return self.send_json(403, {'error': 'Only admins can view the activity log.'})
+                try:
+                    limit = min(500, max(1, int(parse_qs(request.query).get('limit', ['200'])[0])))
+                except ValueError:
+                    limit = 200
+                rows = database.execute('SELECT id, username, action, detail, created_at FROM activity_log WHERE company_id = ? ORDER BY id DESC LIMIT ?', (user['company_id'], limit)).fetchall()
+            return self.send_json(200, {'activity': [dict(row) for row in rows]})
         if request.path != '/api/state':
             return super().do_GET()
         with connection() as database:
