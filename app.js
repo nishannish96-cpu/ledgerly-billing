@@ -676,9 +676,10 @@ function vatReportMarkup() {
 	return `<section class="panel" style="margin-top:24px" id="vat-report"><div class="panel-header"><h2>VAT report (15%)</h2><span style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><label>From <input type="date" id="vat-from" value="${vatReportRange.from}"></label><label>To <input type="date" id="vat-to" value="${vatReportRange.to}"></label><button type="button" id="vat-csv" style="color:#08614d;border:1px solid #08614d;border-radius:5px;padding:4px 8px;font-weight:700">Export CSV</button><button type="button" id="vat-print" style="color:#08614d;border:1px solid #08614d;border-radius:5px;padding:4px 8px;font-weight:700">Print</button></span></div><section class="stats-grid report-stats"><article class="stat-card"><span class="stat-label">Taxable sales</span><strong class="stat-value">${money(data.salesNet - data.returnNet)}</strong><span class="stat-note">After returns</span></article><article class="stat-card"><span class="stat-label">Output VAT</span><strong class="stat-value">${money(data.salesVat)}</strong><span class="stat-note">${data.sales.length} invoices</span></article><article class="stat-card"><span class="stat-label">VAT on returns</span><strong class="stat-value">${money(data.returnVat)}</strong><span class="stat-note">${data.returns.length} returns</span></article><article class="stat-card"><span class="stat-label">Input VAT</span><strong class="stat-value">${money(data.inputVat)}</strong><span class="stat-note">${data.purchases.length} purchases</span></article><article class="stat-card"><span class="stat-label">Net VAT payable</span><strong class="stat-value">${money(netVat)}</strong><span class="stat-note">Output less returns and input VAT</span></article></section><div class="table-wrap"><table class="data-table"><thead><tr><th>Type</th><th>Number</th><th>Date</th><th>Customer</th><th>Net amount</th><th>VAT</th></tr></thead><tbody>${rows || '<tr><td colspan="6">No transactions in this period.</td></tr>'}</tbody></table></div></section>`;
 }
 document.addEventListener('change', event => {
-	if (!event.target.matches('#vat-from, #vat-to')) return;
-	vatReportRange.from = document.getElementById('vat-from').value;
-	vatReportRange.to = document.getElementById('vat-to').value;
+	if (!event.target.matches('#vat-from, #vat-to, #pl-from, #pl-to')) return;
+	const prefix = event.target.id.startsWith('pl-') ? 'pl' : 'vat';
+	vatReportRange.from = document.getElementById(prefix + '-from').value;
+	vatReportRange.to = document.getElementById(prefix + '-to').value;
 	render();
 });
 document.addEventListener('click', event => {
@@ -704,13 +705,73 @@ document.addEventListener('click', event => {
 	}
 });
 
+function profitLossData() {
+	const from = vatReportRange.from ? new Date(`${vatReportRange.from}T00:00:00`) : null;
+	const to = vatReportRange.to ? new Date(`${vatReportRange.to}T23:59:59`) : null;
+	const inRange = date => !(from || to) || (date && (!from || date >= from) && (!to || date <= to));
+	const key = name => String(name || '').trim().toLowerCase();
+	const cost = {};
+	state.purchases.forEach(purchase => (purchase.items || []).forEach(item => {
+		const line = purchaseLineValues(item);
+		const entry = cost[key(item.product)] || (cost[key(item.product)] = { qty: 0, net: 0 });
+		entry.qty += line.quantity; entry.net += line.net;
+	}));
+	const unitCost = name => { const entry = cost[key(name)]; return entry && entry.qty > 0 ? entry.net / entry.qty : null; };
+	const products = {};
+	let uncosted = 0;
+	const add = (item, sign) => {
+		const name = item.product || item.name || 'Item';
+		const line = itemLineValues(item);
+		const unit = unitCost(name);
+		const row = products[key(name)] || (products[key(name)] = { name, qty: 0, revenue: 0, cogs: 0, costed: unit !== null });
+		row.qty += sign * line.quantity; row.revenue += sign * line.net; row.cogs += sign * line.quantity * (unit || 0);
+		if (unit === null && sign > 0) uncosted += 1;
+	};
+	let salesNet = 0; let returnNet = 0;
+	state.invoices.filter(invoice => inRange(parseDocDate(invoice.date))).forEach(invoice => {
+		if (invoice.items?.length) invoice.items.forEach(item => { add(item, 1); salesNet += itemLineValues(item).net; });
+		else { const returned = state.returns.filter(entry => entry.invoice === invoice.no).reduce((sum, entry) => sum + returnNetTotal(entry), 0); salesNet += (Number(invoice.total) || 0) / 1.15 + returned; uncosted += 1; }
+	});
+	state.returns.filter(entry => inRange(parseDocDate(entry.date))).forEach(entry => { returnNet += returnNetTotal(entry); (entry.items || []).forEach(item => add(item, -1)); });
+	const rows = Object.values(products).sort((a, b) => b.revenue - a.revenue);
+	const cogs = rows.reduce((sum, row) => sum + row.cogs, 0);
+	const revenue = salesNet - returnNet;
+	const purchasesNet = state.purchases.filter(purchase => inRange(purchaseDate(purchase))).reduce((sum, purchase) => sum + purchaseTotals(purchase).net, 0);
+	return { rows, revenue, salesNet, returnNet, cogs, gross: revenue - cogs, margin: revenue > 0 ? (revenue - cogs) / revenue * 100 : 0, uncosted, purchasesNet };
+}
+function profitLossMarkup() {
+	const data = profitLossData();
+	const rows = data.rows.map(row => `<tr><td><b>${escHtml(row.name)}</b></td><td>${row.qty}</td><td class="num">${money(row.revenue)}</td><td class="num">${row.costed ? money(row.cogs) : '—'}</td><td class="num">${row.costed ? money(row.revenue - row.cogs) : '—'}</td></tr>`).join('') || '<tr><td colspan="5">No sales in this period.</td></tr>';
+	const btn = 'color:#08614d;border:1px solid #08614d;border-radius:5px;padding:4px 8px;font-weight:700';
+	return `<section class="panel" style="margin-top:24px" id="pl-report"><div class="panel-header"><h2>Profit and loss</h2><span style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><label>From <input type="date" id="pl-from" value="${vatReportRange.from}"></label><label>To <input type="date" id="pl-to" value="${vatReportRange.to}"></label><button type="button" id="pl-csv" style="${btn}">Export CSV</button><button type="button" id="pl-print" style="${btn}">Print</button></span></div><section class="stats-grid report-stats"><article class="stat-card"><span class="stat-label">Revenue</span><strong class="stat-value">${money(data.revenue)}</strong><span class="stat-note">Sales less returns, excl. VAT</span></article><article class="stat-card"><span class="stat-label">Cost of goods sold</span><strong class="stat-value">${money(data.cogs)}</strong><span class="stat-note">At average purchase cost</span></article><article class="stat-card"><span class="stat-label">Gross profit</span><strong class="stat-value" style="color:${data.gross < 0 ? '#b14f43' : 'inherit'}">${money(data.gross)}</strong><span class="stat-note">${data.margin.toFixed(1)}% margin</span></article><article class="stat-card"><span class="stat-label">Purchases in period</span><strong class="stat-value">${money(data.purchasesNet)}</strong><span class="stat-note">Stock bought, excl. VAT</span></article></section>${data.uncosted ? `<p style="margin:8px 16px;font-size:12px;color:#b14f43">${data.uncosted} sold line(s) have no purchase cost, so their cost is counted as zero. Record purchases for these items to get accurate profit.</p>` : ''}<div class="table-wrap"><table class="data-table"><thead><tr><th>Item</th><th>Net qty sold</th><th>Revenue</th><th>Cost</th><th>Profit</th></tr></thead><tbody>${rows}</tbody></table></div></section>`;
+}
+document.addEventListener('click', event => {
+	if (event.target.closest('#pl-csv')) {
+		const data = profitLossData();
+		const cell = value => `"${String(value ?? '').replace(/"/g, '""')}"`;
+		const lines = [['Item', 'Net qty sold', 'Revenue', 'Cost', 'Profit'].map(cell).join(',')];
+		data.rows.forEach(row => lines.push([row.name, row.qty, row.revenue.toFixed(2), row.cogs.toFixed(2), (row.revenue - row.cogs).toFixed(2)].map(cell).join(',')));
+		lines.push(['Total', '', data.revenue.toFixed(2), data.cogs.toFixed(2), data.gross.toFixed(2)].map(cell).join(','));
+		const link = document.createElement('a');
+		link.href = URL.createObjectURL(new Blob(['\ufeff' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' }));
+		link.download = `profit-loss-${vatReportRange.from || 'all'}-${vatReportRange.to || 'all'}.csv`;
+		link.click();
+		URL.revokeObjectURL(link.href);
+	}
+	if (event.target.closest('#pl-print')) {
+		const popup = window.open('', '_blank', 'width=900,height=1000');
+		if (!popup) return;
+		popup.document.write(`<html><head><title>Profit and loss</title><style>body{font-family:Arial,sans-serif;font-size:12px;padding:20px}table{width:100%;border-collapse:collapse}th,td{border-bottom:1px solid #ccc;padding:5px;text-align:left}.num{text-align:right}.stat-card{display:inline-block;margin:6px 16px 6px 0}.stat-value{display:block;font-size:16px}label,button{display:none}</style></head><body><h2>${escHtml(state.company.name || '')} — Profit and loss</h2><p>Period: ${vatReportRange.from || 'start'} to ${vatReportRange.to || 'today'}</p>${document.getElementById('pl-report').innerHTML}<script>window.print();<\/script></body></html>`);
+		popup.document.close();
+	}
+});
 function renderReports() {
 	const totalSales = state.invoices.reduce((sum, invoice) => sum + (Number(invoice.total) || 0), 0);
 	const stockIntake = state.inventoryHistory.filter(entry => entry.change > 0).reduce((sum, entry) => sum + entry.change, 0);
 	const stockOuttake = Math.abs(state.inventoryHistory.filter(entry => entry.change < 0).reduce((sum, entry) => sum + entry.change, 0));
 	const totalReturns = state.returns.reduce((sum, returned) => sum + (Number(returned.refundTotal) || returnNetTotal(returned) * 1.15), 0);
 	const movementRows = state.inventoryHistory.map(entry => `<tr><td>${entry.date}</td><td><b>${entry.product}</b></td><td style="color:${entry.change >= 0 ? 'var(--green)' : '#b14f43'};font-weight:700">${entry.change >= 0 ? 'Intake +' : 'Outtake '}${Math.abs(entry.change)}</td><td>${entry.reason}</td><td>${entry.reference || '—'}</td></tr>`).join('');
-	return `<div class="page-heading"><div><div class="eyebrow">Business intelligence</div><h1>Reports</h1><p>Track sales, stock movement, and customer returns.</p></div></div><section class="stats-grid report-stats"><article class="stat-card"><span class="stat-label">1. Total sales</span><strong class="stat-value">${money(totalSales)}</strong><span class="stat-note">${state.invoices.length} invoices</span></article><article class="stat-card"><span class="stat-label">2. Stock intake</span><strong class="stat-value">${stockIntake}</strong><span class="stat-note">Units received</span></article><article class="stat-card"><span class="stat-label">2. Stock outtake</span><strong class="stat-value">${stockOuttake}</strong><span class="stat-note">Units sold or removed</span></article><article class="stat-card"><span class="stat-label">3. Total return</span><strong class="stat-value">${money(totalReturns)}</strong><span class="stat-note">${state.returns.length} return records</span></article></section><section class="panel report-movement"><div class="panel-header"><h2>Stock intake and outtake</h2></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Date</th><th>Item</th><th>Movement</th><th>Reason</th><th>Reference</th></tr></thead><tbody>${movementRows || '<tr><td colspan="5">No stock movement recorded yet.</td></tr>'}</tbody></table></div></section>${vatReportMarkup()}${backupMarkup()}${activityLogMarkup()}`;
+	return `<div class="page-heading"><div><div class="eyebrow">Business intelligence</div><h1>Reports</h1><p>Track sales, stock movement, and customer returns.</p></div></div><section class="stats-grid report-stats"><article class="stat-card"><span class="stat-label">1. Total sales</span><strong class="stat-value">${money(totalSales)}</strong><span class="stat-note">${state.invoices.length} invoices</span></article><article class="stat-card"><span class="stat-label">2. Stock intake</span><strong class="stat-value">${stockIntake}</strong><span class="stat-note">Units received</span></article><article class="stat-card"><span class="stat-label">2. Stock outtake</span><strong class="stat-value">${stockOuttake}</strong><span class="stat-note">Units sold or removed</span></article><article class="stat-card"><span class="stat-label">3. Total return</span><strong class="stat-value">${money(totalReturns)}</strong><span class="stat-note">${state.returns.length} return records</span></article></section><section class="panel report-movement"><div class="panel-header"><h2>Stock intake and outtake</h2></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Date</th><th>Item</th><th>Movement</th><th>Reason</th><th>Reference</th></tr></thead><tbody>${movementRows || '<tr><td colspan="5">No stock movement recorded yet.</td></tr>'}</tbody></table></div></section>${profitLossMarkup()}${vatReportMarkup()}${backupMarkup()}${activityLogMarkup()}`;
 }
 
 function renderGeneric(view) { const config = { quotations: ['Quotations', 'Prepare and track customer quotations before invoicing.', '＋ New quotation'], delivery: ['Delivery notes', 'Dispatch orders with proof of handover.', '＋ New delivery note'], returns: ['Returns & stock returns', 'Track customer returns and put good stock back where it belongs.', '＋ Record return'], customers: ['Customers', 'Your customer directory and account balances live here.', '＋ Add customer'], reports: ['Reports', 'Sales, VAT, stock movement, and return reporting.', 'Export report'] }[view]; const search = view === 'returns' ? '<input class="filter-input" id="returns-filter" placeholder="⌕ Search returns" />' : ''; return `<div class="page-heading"><div><div class="eyebrow">Operations</div><h1>${config[0]}</h1><p>${config[1]}</p></div><button class="primary-btn">${config[2]}</button></div><section class="panel"><div class="panel-header"><h2>${view === 'returns' ? 'Returns' : view === 'quotations' ? 'Quotations' : 'Workspace'}</h2>${search}</div><div class="empty-state" data-returns-content><div class="stat-icon bg-mint" style="position:static;margin:0 auto 16px;font-size:22px">${view === 'returns' ? '↩' : view === 'delivery' ? '⌁' : '◈'}</div><h3>${view === 'returns' ? 'Returns are under control' : view === 'quotations' ? 'Your quotations are ready' : 'Your workspace is ready'}</h3><p>Use the action above to add your first record. This module is connected to the same inventory and VAT workflow.</p></div></section>`; }
