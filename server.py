@@ -7,6 +7,7 @@ import re
 import secrets
 import smtplib
 import sqlite3
+import sys
 import time
 from email.message import EmailMessage
 from http.cookies import SimpleCookie
@@ -241,6 +242,16 @@ def send_verification_email(email, code):
         smtp.send_message(message)
 
 
+def email_failure_message(error):
+    if isinstance(error, RuntimeError):
+        return 'Email is not configured on the server: SMTP_USER and SMTP_PASSWORD are missing.'
+    if isinstance(error, smtplib.SMTPAuthenticationError):
+        return 'Gmail rejected the login. Check SMTP_USER and use a valid Google App Password for SMTP_PASSWORD.'
+    if isinstance(error, (OSError, smtplib.SMTPConnectError, smtplib.SMTPServerDisconnected)):
+        return 'The server could not connect to Gmail SMTP. The hosting plan may block outbound SMTP ports.'
+    return 'Unable to send the verification email. Check the server logs for details.'
+
+
 class LedgerlyHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(ROOT), **kwargs)
@@ -341,7 +352,7 @@ class LedgerlyHandler(SimpleHTTPRequestHandler):
                     except (OSError, RuntimeError, smtplib.SMTPException, ValueError):
                         logging.exception('Unable to resend account verification email')
                         database.execute('UPDATE registration_codes SET code = ?, expires_at = ?, attempts = ? WHERE email = ?', (pending['code'], pending['expires_at'], pending['attempts'], username))
-                        return self.send_json(503, {'error': 'Unable to send the verification email. Check Gmail SMTP configuration and try again.'})
+                        return self.send_json(503, {'error': email_failure_message(sys.exc_info()[1])})
                 return self.send_json(200, {'verification_required': True})
             if path == '/api/state':
                 state = payload.get('state')
@@ -455,7 +466,7 @@ class LedgerlyHandler(SimpleHTTPRequestHandler):
                     except (OSError, RuntimeError, smtplib.SMTPException, ValueError):
                         logging.exception('Unable to send account verification email')
                         database.execute('DELETE FROM registration_codes WHERE email = ? AND code = ?', (username, code))
-                        return self.send_json(503, {'error': 'Unable to send the verification email. Check Gmail SMTP configuration and try again.'})
+                        return self.send_json(503, {'error': email_failure_message(sys.exc_info()[1])})
                     return self.send_json(202, {'verification_required': True})
                 if not user:
                     return self.send_json(401, {'error': 'Invalid username or password.'})
