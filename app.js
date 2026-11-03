@@ -159,11 +159,13 @@ function migrateReturnVat() {
 		returned.items = (returned.items || []).map(item => {
 			const sourceItem = invoice?.items?.find(source => source.product === item.product);
 			const price = Number(item.price ?? sourceItem?.price ?? 0);
-			if (item.price !== price) changed = true;
-			return { ...item, price };
+			const vatRate = Number(item.vatRate ?? sourceItem?.vatRate ?? 0.15);
+			const vatCategory = item.vatCategory || sourceItem?.vatCategory || (vatRate === 0 ? 'zero' : 'standard');
+			if (item.price !== price || item.vatRate !== vatRate || item.vatCategory !== vatCategory) changed = true;
+			return { ...item, price, vatRate, vatCategory };
 		});
 		const netTotal = returned.items.reduce((sum, item) => sum + item.price * (Number(item.quantity) || 0), 0);
-		const vatTotal = netTotal * 0.15;
+		const vatTotal = returned.items.reduce((sum, item) => sum + itemLineValues(item).vat, 0);
 		if (Number(returned.refundSubtotal) !== netTotal || Number(returned.refundVat) !== vatTotal || Number(returned.refundTotal) !== netTotal + vatTotal) changed = true;
 		returned.refundSubtotal = netTotal;
 		returned.refundVat = vatTotal;
@@ -194,6 +196,7 @@ function itemLineValues(item) {
 	const vat = net * vatRate;
 	return { quantity, unit: item.unit || 'pcs', price, discountPerUnit, discount: discountPerUnit * quantity, net, vat, total: net + vat, vatRate };
 }
+function vatRateForCategory(category) { return ['zero', 'exempt', 'outside_scope'].includes(category) ? 0 : 0.15; }
 function lineItemTableRows(items = []) {
 	return items.map((item, index) => { const line = itemLineValues(item); return `<tr><td>${index + 1}</td><td>${escHtml(item.product || item.name || '')}</td><td>${line.quantity}</td><td>${escHtml(line.unit)}</td><td>${money(line.discount)}</td><td>${money(line.price)}</td><td>${money(line.vat)}</td><td>${money(line.total)}</td></tr>`; }).join('');
 }
@@ -850,12 +853,80 @@ function render() { if (!canAccessView(state.view)) state.view = (ROLE_VIEWS[cur
 function syncRoleAccess() { const role = currentRole(); document.querySelectorAll('.nav-item[data-view]').forEach(item => { item.hidden = !canAccessView(item.dataset.view); }); const createInvoice = document.getElementById('new-invoice-btn'); if (createInvoice) createInvoice.hidden = !['admin', 'cashier'].includes(role); if (role === 'cashier') document.querySelectorAll('.product-meta').forEach(meta => { const quantity = meta.querySelector('.quantity-input'); if (quantity) meta.replaceChildren(Object.assign(document.createElement('span'), { textContent: `${quantity.value} units` })); }); }
 function bindViewActions() { document.querySelectorAll('[data-view-link]').forEach(el => el.addEventListener('click', () => { if (!canAccessView(el.dataset.viewLink)) return; state.view = el.dataset.viewLink; document.querySelectorAll('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.view === state.view)); render(); })); document.querySelectorAll('.nav-item[data-view]').forEach(el => el.addEventListener('click', () => { if (!canAccessView(el.dataset.view)) return; state.view = el.dataset.view; document.querySelectorAll('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.view === state.view)); render(); })); document.getElementById('new-invoice-btn').onclick = () => { if (['admin', 'cashier'].includes(currentRole())) openModal(); }; document.getElementById('invoice-filter')?.addEventListener('input', event => { const q = event.target.value.toLowerCase(); document.querySelector('#invoice-table tbody').innerHTML = state.invoices.filter(i => `${escHtml(i.no)} ${escHtml(i.customer)}`.toLowerCase().includes(q)).map(inv => `<tr><td><b>${escHtml(inv.no)}</b></td><td><span class="item-name">${escHtml(inv.customer)}</span><span class="item-sub">${inv.date}</span></td><td><span class="status ${statusClass(inv.status)}">${escHtml(inv.status)}</span></td><td>${money(inv.total)} <button class="pdf-invoice" data-invoice="${escHtml(inv.no)}" title="Print or save as PDF" style="color:#08614d;border:1px solid #08614d;border-radius:5px;padding:4px 7px;margin-left:8px;font-size:11px;font-weight:700">PDF</button></td></tr>`).join(''); }); document.getElementById('inventory-filter')?.addEventListener('input', event => { const q = event.target.value.toLowerCase(); document.querySelectorAll('[data-inventory-search]').forEach(item => { item.hidden = !item.dataset.inventorySearch.includes(q); }); }); document.getElementById('returns-filter')?.addEventListener('input', event => { const content = document.querySelector('[data-returns-content]'); if (content) content.hidden = Boolean(event.target.value.trim()); }); }
 function invoiceItemMarkup(item = null, serial = 1) { const inventoryProduct = state.products.find(product => product.id === item?.productId || product.name === item?.product) || null; const itemName = item?.product || inventoryProduct?.name || ''; const quantity = item?.quantity || 1; const price = item?.price ?? inventoryProduct?.price ?? 0; const unit = item?.unit || inventoryProduct?.unit || 'pcs'; const discount = Number(item?.discount) || 0; const line = itemLineValues({ quantity, price, unit, discount }); return `<div class="invoice-item" style="display:grid;grid-template-columns:42px minmax(100px,2fr) 48px 48px 74px 74px 80px 74px 90px 28px;gap:4px;align-items:stretch;width:100%;min-width:0;border-bottom:1px solid #e7ebe7;padding:10px 0;margin-bottom:8px"><span class="invoice-serial" style="${entryValueBoxStyle}"><small style="display:block;color:#78817e">Sl No.</small><b>${serial}</b></span><label style="${entryValueBoxStyle}"><small>Item name</small><input style="${entryValueInputStyle}" class="invoice-product" list="invoice-product-list" value="${itemName}" placeholder="Type an item name" /></label><label style="${entryValueBoxStyle}"><small>Qty</small><input style="${entryValueInputStyle}" class="invoice-quantity" type="number" min="1" step="0.01" value="${quantity}" /></label><label style="${entryValueBoxStyle}"><small>Unit</small><input style="${entryValueInputStyle}" class="invoice-unit" value="${unit}" /></label><label style="${entryValueBoxStyle}"><small>Unit price</small><input style="${entryValueInputStyle}" class="invoice-price" type="number" min="0" step="0.01" value="${price}" /></label><label style="${entryValueBoxStyle}"><small>Discount</small><input style="${entryValueInputStyle}" class="invoice-discount" type="number" min="0" step="0.01" value="${discount}" /></label><div style="${entryValueBoxStyle}"><small>Item price</small><b class="invoice-line-net">${money(line.net)}</b></div><div style="${entryValueBoxStyle}"><small>VAT</small><b class="invoice-line-vat">${money(line.vat)}</b></div><div style="${entryValueBoxStyle}"><small>Total amount</small><b class="invoice-line-amount">${money(line.total)}</b></div><button type="button" class="remove-invoice-item" title="Remove item" style="align-self:center;height:42px;color:#b14f43;border:1px solid #e2b8b0;border-radius:5px;padding:7px 8px">×</button></div>`; }
-function bindInvoiceItems() { document.querySelectorAll('.invoice-product,.invoice-quantity,.invoice-unit,.invoice-discount,.invoice-price').forEach(input => { input.addEventListener('input', updateModalTotal); input.addEventListener('change', event => { if (!event.target.matches('.invoice-product')) return; const row = event.target.closest('.invoice-item'); const product = findInventoryProduct(event.target.value); if (!row || !product) return; row.querySelector('.invoice-price').value = Number(product.price) || 0; row.querySelector('.invoice-unit').value = product.unit || 'pcs'; updateModalTotal(); }); }); }
-function renderInvoiceItems(items = null) { const container = document.getElementById('invoice-items'); container.style.overflowX = 'auto'; container.innerHTML = `<datalist id="invoice-product-list">${state.products.map(product => `<option value="${escHtml(product.name)}"></option>`).join('')}</datalist>${items?.length ? items.map((item, index) => invoiceItemMarkup(item, index + 1)).join('') : invoiceItemMarkup(null, 1)}`; bindInvoiceItems(); }
-function addInvoiceItem() { const container = document.getElementById('invoice-items'); container.insertAdjacentHTML('beforeend', invoiceItemMarkup(null, container.querySelectorAll('.invoice-item').length + 1)); bindInvoiceItems(); updateModalTotal(); }
+function bindInvoiceItems() {
+	document.querySelectorAll('.invoice-product,.invoice-quantity,.invoice-unit,.invoice-discount,.invoice-price,.invoice-vat-category').forEach(input => {
+		input.addEventListener('input', updateModalTotal);
+		input.addEventListener('change', event => {
+			if (!event.target.matches('.invoice-product')) { updateModalTotal(); return; }
+			const row = event.target.closest('.invoice-item');
+			const product = findInventoryProduct(event.target.value);
+			if (!row || !product) return;
+			row.querySelector('.invoice-price').value = Number(product.price) || 0;
+			row.querySelector('.invoice-unit').value = product.unit || 'pcs';
+			row.querySelector('.invoice-vat-category').value = product.vatCategory || 'standard';
+			updateModalTotal();
+		});
+	});
+}
+function addInvoiceTaxSelector(row, item = null) {
+	if (!row || row.querySelector('.invoice-vat-category')) return;
+	const taxLabel = document.createElement('label');
+	taxLabel.setAttribute('style', entryValueBoxStyle);
+	const caption = document.createElement('small');
+	caption.textContent = 'VAT type';
+	const selector = document.createElement('select');
+	selector.className = 'invoice-vat-category';
+	selector.setAttribute('style', entryValueInputStyle);
+	[['standard', 'Standard 15%'], ['zero', 'Zero-rated'], ['exempt', 'Exempt'], ['outside_scope', 'Outside scope']].forEach(([value, label]) => {
+		const option = document.createElement('option');
+		option.value = value;
+		option.textContent = label;
+		selector.append(option);
+	});
+	selector.value = item?.vatCategory || (Number(item?.vatRate) === 0 ? 'zero' : 'standard');
+	taxLabel.append(caption, selector);
+	const vatCell = row.querySelector('.invoice-line-vat')?.parentElement;
+	if (vatCell) row.insertBefore(taxLabel, vatCell);
+	row.style.gridTemplateColumns = '42px minmax(100px,2fr) 48px 48px 74px 74px 78px 80px 74px 90px 28px';
+}
+function renderInvoiceItems(items = null) {
+	const container = document.getElementById('invoice-items');
+	container.style.overflowX = 'auto';
+	container.innerHTML = `<datalist id="invoice-product-list">${state.products.map(product => `<option value="${escHtml(product.name)}"></option>`).join('')}</datalist>${items?.length ? items.map((item, index) => invoiceItemMarkup(item, index + 1)).join('') : invoiceItemMarkup(null, 1)}`;
+	container.querySelectorAll('.invoice-item').forEach((row, index) => addInvoiceTaxSelector(row, items?.[index]));
+	bindInvoiceItems();
+}
+function addInvoiceItem() {
+	const container = document.getElementById('invoice-items');
+	container.insertAdjacentHTML('beforeend', invoiceItemMarkup(null, container.querySelectorAll('.invoice-item').length + 1));
+	addInvoiceTaxSelector(container.querySelector('.invoice-item:last-child'));
+	bindInvoiceItems();
+	updateModalTotal();
+}
 function openModal(draft = null) { invoiceDraft = draft; const customerSelect = document.getElementById('customer-select'); customerSelect.innerHTML = '<option>Walk-in customer</option>' + state.customers.map(customer => `<option value="${escHtml(customer.name)}">${escHtml(customer.name)}${customer.mobile ? ` · ${escHtml(customer.mobile)}` : ''}</option>`).join(''); document.getElementById('invoice-number').value = nextInvoiceNumber(); if (draft) customerSelect.value = draft.customer; document.getElementById('modal-backdrop').hidden = false; renderInvoiceItems(draft?.items); updateModalTotal(); }
 function closeModal() { document.getElementById('modal-backdrop').hidden = true; invoiceDraft = null; }
-function updateModalTotal() { let subtotal = 0; let vat = 0; document.querySelectorAll('.invoice-item').forEach(row => { const line = itemLineValues({ quantity: row.querySelector('.invoice-quantity').value, price: row.querySelector('.invoice-price').value, discount: row.querySelector('.invoice-discount').value, unit: row.querySelector('.invoice-unit').value }); subtotal += line.net; vat += line.vat; row.querySelector('.invoice-line-net').textContent = money(line.net); row.querySelector('.invoice-line-vat').textContent = money(line.vat); row.querySelector('.invoice-line-amount').textContent = money(line.total); }); document.getElementById('modal-subtotal').textContent = money(subtotal); document.getElementById('modal-vat').textContent = money(vat); document.getElementById('modal-total').textContent = money(subtotal + vat); }
+function updateModalTotal() {
+	let subtotal = 0;
+	let vat = 0;
+	document.querySelectorAll('.invoice-item').forEach(row => {
+		const vatCategory = row.querySelector('.invoice-vat-category')?.value || 'standard';
+		const line = itemLineValues({
+			quantity: row.querySelector('.invoice-quantity').value,
+			price: row.querySelector('.invoice-price').value,
+			discount: row.querySelector('.invoice-discount').value,
+			unit: row.querySelector('.invoice-unit').value,
+			vatRate: vatRateForCategory(vatCategory),
+		});
+		subtotal += line.net;
+		vat += line.vat;
+		row.querySelector('.invoice-line-net').textContent = money(line.net);
+		row.querySelector('.invoice-line-vat').textContent = money(line.vat);
+		row.querySelector('.invoice-line-amount').textContent = money(line.total);
+	});
+	document.getElementById('modal-subtotal').textContent = money(subtotal);
+	document.getElementById('modal-vat').textContent = money(vat);
+	document.getElementById('modal-total').textContent = money(subtotal + vat);
+}
 function nextStockNumber() { const numbers = state.products.map(product => Number((product.id.match(/STK-(\d+)/i) || [0, 0])[1])); return `STK-${String(Math.max(0, ...numbers) + 1).padStart(4, '0')}`; }
 function syncInventoryMode() { document.getElementById('inventory-modal-title').textContent = 'Add new item'; document.getElementById('inventory-submit').firstChild.textContent = 'Add item '; document.getElementById('inventory-sku').value = nextStockNumber(); }
 function openInventoryModal() { document.getElementById('inventory-name').value = ''; document.getElementById('inventory-brand').value = ''; document.getElementById('inventory-category').value = ''; document.getElementById('inventory-quantity').value = '1'; document.getElementById('inventory-price').value = ''; document.getElementById('inventory-modal-backdrop').hidden = false; syncInventoryMode(); document.getElementById('inventory-name').focus(); }
@@ -942,8 +1013,10 @@ document.getElementById('invoice-form').addEventListener('submit', event => {
 		const price = Math.max(0, Number(row.querySelector('.invoice-price').value) || 0);
 		const discount = Math.min(price, Math.max(0, Number(row.querySelector('.invoice-discount').value) || 0));
 		const unit = row.querySelector('.invoice-unit').value.trim() || 'pcs';
-		const line = itemLineValues({ quantity, price, discount, unit, vatRate: 0.15 });
-		return { product, productName, quantity, price, discount, unit, vatRate: 0.15, vatAmount: line.vat, total: line.total, net: line.net };
+		const vatCategory = row.querySelector('.invoice-vat-category').value;
+		const vatRate = vatRateForCategory(vatCategory);
+		const line = itemLineValues({ quantity, price, discount, unit, vatRate });
+		return { product, productName, quantity, price, discount, unit, vatCategory, vatRate, vatAmount: line.vat, total: line.total, net: line.net };
 	}).filter(item => item.productName && item.quantity > 0);
 	if (!items.length) return;
 	if ([...document.querySelectorAll('.invoice-item')].some(row => Number(row.querySelector('.invoice-discount').value) > Number(row.querySelector('.invoice-price').value))) {
@@ -954,7 +1027,7 @@ document.getElementById('invoice-form').addEventListener('submit', event => {
 	const subtotal = items.reduce((sum, item) => sum + item.net, 0);
 	const vat = items.reduce((sum, item) => sum + item.vatAmount, 0);
 	const quotation = invoiceDraft?.quotation ? state.quotations.find(item => item.no === invoiceDraft.quotation) : null;
-	state.invoices.unshift({ no: document.getElementById('invoice-number').value || nextInvoiceNumber(), quotation: invoiceDraft?.quotation, customer: document.getElementById('customer-select').value, paymentMethod, date: formatSystemDateTime(), subtotal, total: subtotal + vat, status: paymentMethod === 'Credit' ? 'Pending' : 'Paid', items: items.map(({ productName, quantity, price, discount, unit, vatRate, vatAmount, total }) => ({ product: productName, quantity, unit, price, discount, vatRate, vatAmount, total })), vat: 0.15 });
+	state.invoices.unshift({ no: document.getElementById('invoice-number').value || nextInvoiceNumber(), quotation: invoiceDraft?.quotation, customer: document.getElementById('customer-select').value, paymentMethod, date: formatSystemDateTime(), subtotal, vatTotal: vat, total: subtotal + vat, status: paymentMethod === 'Credit' ? 'Pending' : 'Paid', items: items.map(({ productName, quantity, price, discount, unit, vatCategory, vatRate, vatAmount, total }) => ({ product: productName, quantity, unit, price, discount, vatCategory, vatRate, vatAmount, total })) });
 	if (quotation) quotation.status = 'Converted';
 	items.forEach(item => { if (item.product) item.product.stock = Math.max(0, item.product.stock - item.quantity); });
 	saveState();
@@ -1006,7 +1079,7 @@ document.addEventListener('click', event => {
 	const items = [...recordButton.closest('.return-invoice').querySelectorAll('.return-item')].map(row => {
 		const invoiceItem = invoice.items[Number(row.dataset.itemIndex)];
 		const quantity = Math.min(Number(row.querySelector('.return-quantity').value) || 0, Number(row.querySelector('.return-quantity').max));
-		return { product: row.querySelector('.return-product').value.trim() || invoiceItem.product, inventoryProduct: invoiceItem.product, invoiceItemIndex: Number(row.dataset.itemIndex), quantity, price: Number(invoiceItem.price) || 0, discount: Number(invoiceItem.discount) || 0, unit: invoiceItem.unit || 'pcs', vatRate: invoiceItem.vatRate ?? 0.15 };
+		return { product: row.querySelector('.return-product').value.trim() || invoiceItem.product, inventoryProduct: invoiceItem.product, invoiceItemIndex: Number(row.dataset.itemIndex), quantity, price: Number(invoiceItem.price) || 0, discount: Number(invoiceItem.discount) || 0, unit: invoiceItem.unit || 'pcs', vatCategory: invoiceItem.vatCategory || 'standard', vatRate: invoiceItem.vatRate ?? 0.15 };
 	}).filter(item => item.quantity > 0);
 	if (!items.length) return;
 	state.returns.unshift({ no: `RET-${String(state.returns.length + 1).padStart(4, '0')}`, invoice: invoiceNumber, customer: invoice.customer, date: formatSystemDateTime(), items });
