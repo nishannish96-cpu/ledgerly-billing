@@ -408,7 +408,7 @@ function printCustomerStatement(customerName) {
 
 function renderCustomers() {
 	if (state.customerDetail) return renderCustomerAccount(state.customerDetail);
-	return `<div class="page-heading"><div><div class="eyebrow">Manage</div><h1>Customers</h1><p>Keep customer contact and VAT details ready for billing.</p></div><button class="primary-btn" id="add-customer">＋ Add customer</button></div><section class="panel"><div class="panel-header"><h2>Customers (${state.customers.length})</h2><input class="filter-input" id="customer-filter" placeholder="⌕ Search customers" /></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Customer</th><th>Mobile</th><th>VAT number</th><th>Credit balance</th><th></th></tr></thead><tbody>${state.customers.map(customer => `<tr data-customer-search="${`${escHtml(customer.name)} ${escHtml(customer.mobile)} ${escHtml(customer.vat)} ${escHtml(customer.address)}`.toLowerCase()}"><td><b>${escHtml(customer.name)}</b></td><td>${escHtml(customer.mobile)}</td><td>${escHtml(customer.vat || '—')}</td><td>${money(customerCreditTotal(customer.name))}</td><td><button type="button" class="date-chip customer-detail" data-customer="${escHtml(customer.name)}">View account</button> <button type="button" class="date-chip delete-customer" data-customer="${escHtml(customer.name)}" style="color:#a64c43;border-color:#e2b8b0">Delete</button></td></tr>`).join('') || '<tr><td colspan="5">No customers added yet.</td></tr>'}</tbody></table></div></section>`;
+	return `<div class="page-heading"><div><div class="eyebrow">Manage</div><h1>Customers</h1><p>Keep customer contact and VAT details ready for billing.</p></div><button class="primary-btn" id="add-customer">＋ Add customer</button></div><section class="panel"><div class="panel-header"><h2>Customers (${state.customers.length})</h2><input class="filter-input" id="customer-filter" placeholder="⌕ Search customers" /></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Customer</th><th>Type</th><th>Mobile</th><th>VAT number</th><th>Credit balance</th><th></th></tr></thead><tbody>${state.customers.map(customer => `<tr data-customer-search="${`${escHtml(customer.name)} ${escHtml(customer.legalName)} ${escHtml(customer.mobile)} ${escHtml(customer.email)} ${escHtml(customer.vat)} ${escHtml(customer.address)}`.toLowerCase()}"><td><b>${escHtml(customer.name)}</b>${customer.legalName ? `<small class="item-sub" style="display:block">${escHtml(customer.legalName)}</small>` : ''}</td><td>${customer.customerType === 'business' ? 'Business' : 'Individual'}</td><td>${escHtml(customer.mobile || '—')}</td><td>${escHtml(customer.vat || '—')}</td><td>${money(customerCreditTotal(customer.name))}</td><td><button type="button" class="date-chip customer-detail" data-customer="${escHtml(customer.name)}">View account</button> <button type="button" class="date-chip delete-customer" data-customer="${escHtml(customer.name)}" style="color:#a64c43;border-color:#e2b8b0">Delete</button></td></tr>`).join('') || '<tr><td colspan="6">No customers added yet.</td></tr>'}</tbody></table></div></section>`;
 }
 function renderReturns() { return `<div class="page-heading"><div><div class="eyebrow">Sales returns</div><h1>Returns</h1><p>Choose invoice items and adjust the returned quantity before recording a return.</p></div></div>${state.invoices.map(invoice => `<section class="panel return-invoice" data-invoice="${escHtml(invoice.no)}"><div class="panel-header"><h2>${escHtml(invoice.no)} · ${escHtml(invoice.customer)}</h2><span>${invoice.date}</span></div>${(invoice.items || []).map((item, index) => `<div class="return-item" data-item-index="${index}" style="display:flex;align-items:center;justify-content:space-between;gap:12px;border-bottom:1px solid #e7ebe7;padding:12px 0"><span><b>${escHtml(item.product)}</b><small style="display:block;color:#78817e">Sold: ${item.quantity}</small></span><div style="display:flex;align-items:center;gap:8px"><button type="button" class="return-quantity-change" data-change="-1">−</button><input class="return-quantity" type="number" min="0" max="${item.quantity}" value="0" aria-label="Return quantity for ${escHtml(item.product)}" /><button type="button" class="return-quantity-change" data-change="1">＋</button></div></div>`).join('')}<button class="primary-btn record-return" type="button" style="margin-top:16px">Record return</button></section>`).join('') || '<section class="panel"><div class="empty-state"><h3>No invoices available</h3><p>Create an invoice before recording a sales return.</p></div></section>'}`; }
 function returnedQuantity(invoiceNumber, productName, invoiceItemIndex) {
@@ -903,7 +903,25 @@ function addInvoiceItem() {
 	bindInvoiceItems();
 	updateModalTotal();
 }
-function openModal(draft = null) { invoiceDraft = draft; const customerSelect = document.getElementById('customer-select'); customerSelect.innerHTML = '<option>Walk-in customer</option>' + state.customers.map(customer => `<option value="${escHtml(customer.name)}">${escHtml(customer.name)}${customer.mobile ? ` · ${escHtml(customer.mobile)}` : ''}</option>`).join(''); document.getElementById('invoice-number').value = nextInvoiceNumber(); if (draft) customerSelect.value = draft.customer; document.getElementById('modal-backdrop').hidden = false; renderInvoiceItems(draft?.items); updateModalTotal(); }
+function customerIsBusiness(customer) { return customer?.customerType === 'business' || (!customer?.customerType && Boolean(customer?.vat)); }
+function syncInvoiceTypeToCustomer() {
+	const selectedName = document.getElementById('customer-select').value;
+	const customer = state.customers.find(item => item.name === selectedName);
+	document.getElementById('invoice-type').value = customerIsBusiness(customer) ? 'standard' : 'simplified';
+}
+function openModal(draft = null) {
+	invoiceDraft = draft;
+	const customerSelect = document.getElementById('customer-select');
+	customerSelect.innerHTML = '<option value="">Walk-in customer</option>' + state.customers.map(customer => `<option value="${escHtml(customer.name)}">${escHtml(customer.name)}${customer.mobile ? ` · ${escHtml(customer.mobile)}` : ''}</option>`).join('');
+	customerSelect.value = draft?.customer || '';
+	customerSelect.onchange = syncInvoiceTypeToCustomer;
+	document.getElementById('invoice-number').value = nextInvoiceNumber();
+	document.getElementById('invoice-type').value = draft?.invoiceType || 'simplified';
+	if (!draft) syncInvoiceTypeToCustomer();
+	document.getElementById('modal-backdrop').hidden = false;
+	renderInvoiceItems(draft?.items);
+	updateModalTotal();
+}
 function closeModal() { document.getElementById('modal-backdrop').hidden = true; invoiceDraft = null; }
 function updateModalTotal() {
 	let subtotal = 0;
@@ -1023,11 +1041,30 @@ document.getElementById('invoice-form').addEventListener('submit', event => {
 		window.alert('Discount per unit cannot exceed the item price.');
 		return;
 	}
+	const invoiceType = document.getElementById('invoice-type').value;
+	const customer = state.customers.find(item => item.name === document.getElementById('customer-select').value);
+	const buyer = customer ? {
+		customerType: customerIsBusiness(customer) ? 'business' : 'individual',
+		name: customer.name,
+		legalName: customer.legalName || customer.name,
+		vat: customer.vat || '',
+		address: customer.address || '',
+		mobile: customer.mobile || '',
+		email: customer.email || '',
+	} : null;
+	if (invoiceType === 'standard' && (!buyer || buyer.customerType !== 'business')) {
+		window.alert('Choose a business customer to issue a standard tax invoice.');
+		return;
+	}
+	if (invoiceType === 'standard' && (!buyer.legalName || !/^3\d{13}3$/.test(buyer.vat) || !buyer.address)) {
+		window.alert('Complete the business legal name, 15-digit Saudi VAT number, and registered address before issuing a standard tax invoice.');
+		return;
+	}
 	const paymentMethod = document.getElementById('payment-method').value;
 	const subtotal = items.reduce((sum, item) => sum + item.net, 0);
 	const vat = items.reduce((sum, item) => sum + item.vatAmount, 0);
 	const quotation = invoiceDraft?.quotation ? state.quotations.find(item => item.no === invoiceDraft.quotation) : null;
-	state.invoices.unshift({ no: document.getElementById('invoice-number').value || nextInvoiceNumber(), quotation: invoiceDraft?.quotation, customer: document.getElementById('customer-select').value, paymentMethod, date: formatSystemDateTime(), subtotal, vatTotal: vat, total: subtotal + vat, status: paymentMethod === 'Credit' ? 'Pending' : 'Paid', items: items.map(({ productName, quantity, price, discount, unit, vatCategory, vatRate, vatAmount, total }) => ({ product: productName, quantity, unit, price, discount, vatCategory, vatRate, vatAmount, total })) });
+	state.invoices.unshift({ no: document.getElementById('invoice-number').value || nextInvoiceNumber(), quotation: invoiceDraft?.quotation, customer: buyer?.name || 'Walk-in customer', buyer, invoiceType, paymentMethod, date: formatSystemDateTime(), subtotal, vatTotal: vat, total: subtotal + vat, status: paymentMethod === 'Credit' ? 'Pending' : 'Paid', items: items.map(({ productName, quantity, price, discount, unit, vatCategory, vatRate, vatAmount, total }) => ({ product: productName, quantity, unit, price, discount, vatCategory, vatRate, vatAmount, total })) });
 	if (quotation) quotation.status = 'Converted';
 	items.forEach(item => { if (item.product) item.product.stock = Math.max(0, item.product.stock - item.quantity); });
 	saveState();
@@ -1041,11 +1078,37 @@ function createDeliveryNote(invoiceNumber) { const invoice = state.invoices.find
 function printDeliveryNote(noteNumber) { const note = state.deliveryNotes.find(item => item.no === noteNumber); if (!note) return; const rows = (note.items || []).map(item => `<tr><td>${escHtml(item.product)}</td><td>${item.quantity}</td></tr>`).join(''); const popup = window.open('', '_blank', 'width=850,height=1000'); if (!popup) return; popup.document.write(`<html><head><title>${escHtml(note.no)}</title><style>body{font-family:Arial,sans-serif;color:#17211f;padding:42px;max-width:820px;margin:auto}header{display:flex;justify-content:space-between;border-bottom:2px solid #08614d;padding-bottom:18px;margin-bottom:24px}h1{color:#08614d}table{width:100%;border-collapse:collapse;margin-top:24px}th{background:#08614d;color:white;text-align:left;padding:12px}td{border-bottom:1px solid #dfe7df;padding:12px}.meta{line-height:1.8;color:#53625e}</style></head><body><header><div><h1>DELIVERY NOTE</h1><div class="meta">Delivery note: <b>${escHtml(note.no)}</b><br>Invoice: <b>${escHtml(note.invoice)}</b><br>Date: ${note.date}</div></div><div><h2>AV COMPANY INC</h2><div class="meta">Customer: <b>${escHtml(note.customer)}</b></div></div></header><table><thead><tr><th>Product</th><th>Quantity</th></tr></thead><tbody>${rows || '<tr><td colspan="2">No items recorded</td></tr>'}</tbody></table><p style="margin-top:48px">Received by: __________________________</p><script>window.print();<\/script></body></html>`); popup.document.close(); }
 document.addEventListener('click', event => { const removeButton = event.target.closest('.remove-invoice-item'); if (removeButton) { const rows = document.querySelectorAll('.invoice-item'); if (rows.length > 1) { removeButton.closest('.invoice-item').remove(); updateModalTotal(); } return; } const button = event.target.closest('.pdf-invoice'); if (button) printInvoice(button.dataset.invoice); const deliveryButton = event.target.closest('.delivery-invoice'); if (deliveryButton) createDeliveryNote(deliveryButton.dataset.invoice); const deliveryPdf = event.target.closest('.delivery-pdf'); if (deliveryPdf) printDeliveryNote(deliveryPdf.dataset.delivery); });
 document.getElementById('inventory-form').addEventListener('submit', () => { const sku = document.getElementById('inventory-sku').value.trim(); const product = state.products.find(item => item.id.toLowerCase() === sku.toLowerCase()); if (product) { product.brand = document.getElementById('inventory-brand').value.trim(); saveState(); render(); } });
-document.addEventListener('click', event => { const deleteCustomer = event.target.closest('.delete-customer'); if (deleteCustomer) { const customerName = deleteCustomer.dataset.customer; if (window.confirm(`Delete ${customerName}? Existing invoices will be kept.`)) { state.customers = state.customers.filter(customer => customer.name !== customerName); if (state.customerDetail === customerName) state.customerDetail = null; saveState(); render(); } return; } const customerDetail = event.target.closest('.customer-detail'); if (customerDetail) { state.customerDetail = customerDetail.dataset.customer; render(); return; } if (event.target.closest('#back-to-customers')) { state.customerDetail = null; render(); return; } if (event.target.closest('#add-customer')) { document.getElementById('customer-form').reset(); document.getElementById('customer-modal-backdrop').hidden = false; document.getElementById('customer-name').focus(); } });
+function syncCustomerTypeFields() {
+	const isBusiness = document.getElementById('customer-type').value === 'business';
+	document.getElementById('business-customer-fields').hidden = !isBusiness;
+	document.getElementById('customer-legal-name').required = isBusiness;
+	document.getElementById('customer-vat').required = isBusiness;
+	document.getElementById('customer-address').required = isBusiness;
+}
+document.getElementById('customer-type').addEventListener('change', syncCustomerTypeFields);
+syncCustomerTypeFields();
+document.addEventListener('click', event => { const deleteCustomer = event.target.closest('.delete-customer'); if (deleteCustomer) { const customerName = deleteCustomer.dataset.customer; if (window.confirm(`Delete ${customerName}? Existing invoices will be kept.`)) { state.customers = state.customers.filter(customer => customer.name !== customerName); if (state.customerDetail === customerName) state.customerDetail = null; saveState(); render(); } return; } const customerDetail = event.target.closest('.customer-detail'); if (customerDetail) { state.customerDetail = customerDetail.dataset.customer; render(); return; } if (event.target.closest('#back-to-customers')) { state.customerDetail = null; render(); return; } if (event.target.closest('#add-customer')) { document.getElementById('customer-form').reset(); syncCustomerTypeFields(); document.getElementById('customer-modal-backdrop').hidden = false; document.getElementById('customer-name').focus(); } });
 document.addEventListener('click', event => { const statementButton = event.target.closest('.customer-statement'); if (statementButton) printCustomerStatement(statementButton.dataset.customer); });
 document.getElementById('customer-modal-close').addEventListener('click', () => { document.getElementById('customer-modal-backdrop').hidden = true; });
 document.getElementById('customer-modal-backdrop').addEventListener('click', event => { if (event.target.id === 'customer-modal-backdrop') event.currentTarget.hidden = true; });
-document.getElementById('customer-form').addEventListener('submit', event => { event.preventDefault(); state.customers.unshift({ name: document.getElementById('customer-name').value.trim(), mobile: document.getElementById('customer-mobile').value.trim(), vat: document.getElementById('customer-vat').value.trim(), address: document.getElementById('customer-address').value.trim() }); saveState(); document.getElementById('customer-modal-backdrop').hidden = true; state.view = 'customers'; document.querySelectorAll('.nav-item').forEach(item => item.classList.toggle('active', item.dataset.view === state.view)); render(); });
+document.getElementById('customer-form').addEventListener('submit', event => {
+	event.preventDefault();
+	const customerType = document.getElementById('customer-type').value;
+	state.customers.unshift({
+		name: document.getElementById('customer-name').value.trim(),
+		customerType,
+		legalName: customerType === 'business' ? document.getElementById('customer-legal-name').value.trim() : '',
+		mobile: document.getElementById('customer-mobile').value.trim(),
+		email: document.getElementById('customer-email').value.trim(),
+		vat: customerType === 'business' ? document.getElementById('customer-vat').value.trim() : '',
+		address: customerType === 'business' ? document.getElementById('customer-address').value.trim() : '',
+	});
+	saveState();
+	document.getElementById('customer-modal-backdrop').hidden = true;
+	state.view = 'customers';
+	document.querySelectorAll('.nav-item').forEach(item => item.classList.toggle('active', item.dataset.view === state.view));
+	render();
+});
 document.addEventListener('input', event => { const filter = event.target.closest('#customer-filter'); if (!filter) return; const query = filter.value.toLowerCase(); document.querySelectorAll('[data-customer-search]').forEach(row => { row.hidden = !row.dataset.customerSearch.includes(query); }); });
 document.getElementById('invoice-form').addEventListener('submit', () => { const invoice = state.invoices[0]; if (!invoice || invoice.items?.some(item => state.inventoryHistory.some(entry => entry.reference === invoice.no && entry.product === item.product))) return; invoice.items?.forEach(item => { const product = state.products.find(stockItem => stockItem.name === item.product); if (product) recordInventoryChange(product, -item.quantity, 'Invoice sale', invoice.no); }); saveState(); });
 function updateReturnLine(row) {
@@ -1169,13 +1232,15 @@ function syncCompanyHeader() {
 }
 
 
-function salesDocumentMarkup({ title, numberLabel, number, date, customerName, status, rows, subtotal, vat, total, notes = '', qr = '' }) {
+function salesDocumentMarkup({ title, numberLabel, number, date, customerName, buyerDetails = null, invoiceType = '', status, rows, subtotal, vat, total, notes = '', qr = '' }) {
 	const company = state.company || {};
-	const customer = state.customers.find(item => item.name === customerName) || {};
+	const customer = buyerDetails || state.customers.find(item => item.name === customerName) || {};
+	const buyerName = customer.legalName || customer.name || customerName || 'Walk-in customer';
 	const companyName = company.name || 'AV COMPANY INC';
 	const details = values => values.filter(Boolean).map(escHtml).join('<br>');
 	const sellerDetails = details([company.address, company.location, company.phone, company.email, company.vat ? `VAT No. ${company.vat}` : '']);
-	const customerDetails = details([customer.address, customer.mobile, customer.vat ? `VAT No. ${customer.vat}` : '']);
+	const customerDetails = details([customer.address, customer.email, customer.mobile, customer.vat ? `VAT Registration No.: ${customer.vat}` : '']);
+	const invoiceTypeLabel = invoiceType === 'standard' ? 'Standard tax invoice' : invoiceType === 'simplified' ? 'Simplified tax invoice' : '';
 	return `<html><head><title>${escHtml(number)}</title><style>
 		@page{size:A4 landscape;margin:10mm}*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#171717;margin:0;font-size:10px}
 		header{display:flex;justify-content:space-between;gap:20px;border-bottom:1px solid #333;padding-bottom:12px;margin-bottom:14px}
@@ -1183,7 +1248,7 @@ function salesDocumentMarkup({ title, numberLabel, number, date, customerName, s
 		table{width:100%;border-collapse:collapse;font-size:9px}th{font-weight:bold;text-align:left;border-top:1px solid #333;border-bottom:1px solid #333;padding:5px 3px;vertical-align:bottom;white-space:nowrap}td{border-bottom:1px solid #bbb;padding:6px 3px;vertical-align:top;white-space:nowrap}th:first-child,td:first-child{width:5%;text-align:center}th:nth-child(2){width:25%}th:nth-child(3),th:nth-child(4){width:7%}th:nth-child(n+5){width:11%}.num{text-align:right;white-space:nowrap}.totals{width:250px;margin:12px 0 0 auto;line-height:1.8}.totals div{display:flex;justify-content:space-between;border-bottom:1px solid #ddd;padding:2px 0}.totals .grand{font-weight:bold;font-size:12px;border-top:1px solid #333;border-bottom:1px solid #333;margin-top:3px;padding:4px 0}.notes{border-top:1px solid #999;margin-top:16px;padding-top:8px;line-height:1.6}.signatures{display:flex;justify-content:space-between;margin-top:46px}.signatures span{border-top:1px solid #555;width:38%;padding-top:5px}
 		@media print{body{print-color-adjust:exact;-webkit-print-color-adjust:exact}}
 	</style></head><body><header><div><h1>${escHtml(title)}</h1><div class="meta">${numberLabel}: <b>${escHtml(number)}</b><br>Date: ${escHtml(date)}${status ? `<br>Status: ${escHtml(status)}` : ''}</div></div><div style="text-align:right"><h2>${escHtml(companyName)}</h2><div class="meta">${sellerDetails}</div></div></header>
-		<section class="parties"><div class="party"><div class="party-label">Bill to / العميل</div><b>${escHtml(customerName || 'Walk-in customer')}</b>${customerDetails ? `<br>${customerDetails}` : ''}</div><div class="party" style="text-align:right"><div class="party-label">Document details / تفاصيل المستند</div>${numberLabel}: <b>${escHtml(number)}</b><br>Date: ${escHtml(date)}</div></section>
+		<section class="parties"><div class="party"><div class="party-label">Bill to / العميل</div><b>${escHtml(buyerName)}</b>${customerDetails ? `<br>${customerDetails}` : ''}</div><div class="party" style="text-align:right"><div class="party-label">Document details / تفاصيل المستند</div>${numberLabel}: <b>${escHtml(number)}</b><br>Date: ${escHtml(date)}${invoiceTypeLabel ? `<br>Invoice type: ${escHtml(invoiceTypeLabel)}` : ''}</div></section>
 		<table><thead><tr><th>Sl No.</th><th>Item Name</th><th>Qty</th><th>Unit</th><th class="num">Unit Price</th><th class="num">Discount</th><th class="num">Item Price</th><th class="num">VAT</th><th class="num">Total Amount</th></tr></thead><tbody>${rows || '<tr><td colspan="9">No items recorded</td></tr>'}</tbody></table>
 		<div class="totals"><div><span>Subtotal / المجموع</span><b>${money(subtotal)}</b></div><div><span>VAT / الضريبة</span><b>${money(vat)}</b></div><div class="grand"><span>Total / الإجمالي</span><b>${money(total)}</b></div></div>
 		${notes ? `<div class="notes"><b>Notes / ملاحظات</b><br>${escHtml(notes)}</div>` : ''}${qr ? `<div style="margin-top:14px;width:110px">${qr}</div>` : ''}<div class="signatures"><span>Prepared by</span><span style="text-align:right">Customer signature</span></div><script>window.print();<\/script></body></html>`;
@@ -1469,7 +1534,7 @@ function printInvoice(invoiceNumber) {
 	const returnRows = returnNet || returnVat ? `<tr><td></td><td>Sales returns</td><td></td><td></td><td></td><td></td><td class="num">-${money(returnNet)}</td><td class="num">-${money(returnVat)}</td><td class="num">-${money(returnNet + returnVat)}</td></tr>` : '';
 	const subtotal = invoice.subtotal == null ? invoice.total / 1.15 : Number(invoice.subtotal);
 	const vat = invoice.total - subtotal;
-	popup.document.write(salesDocumentMarkup({ title: 'TAX INVOICE / فاتورة ضريبية', numberLabel: 'Invoice', number: invoice.no, date: invoice.date, customerName: invoice.customer, status: invoice.status, rows: rows + returnRows, subtotal, vat, total: invoice.total, qr: zatcaQrSvg({ date: invoice.date, total: invoice.total + returnNet + returnVat, vat: vat + returnVat }) }));
+	popup.document.write(salesDocumentMarkup({ title: invoice.invoiceType === 'standard' ? 'STANDARD TAX INVOICE / فاتورة ضريبية قياسية' : 'SIMPLIFIED TAX INVOICE / فاتورة ضريبية مبسطة', numberLabel: 'Invoice', number: invoice.no, date: invoice.date, customerName: invoice.customer, buyerDetails: invoice.buyer || null, invoiceType: invoice.invoiceType || 'simplified', status: invoice.status, rows: rows + returnRows, subtotal, vat, total: invoice.total, qr: zatcaQrSvg({ date: invoice.date, total: invoice.total + returnNet + returnVat, vat: vat + returnVat }) }));
 	popup.document.close();
 }
 

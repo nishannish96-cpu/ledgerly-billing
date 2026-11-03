@@ -92,7 +92,8 @@
       <button class="modal-close" id="modal-close">×</button>
       <div style="display:flex;align-items:flex-start;justify-content:space-between;border-bottom:2px solid #08614d;padding-bottom:18px;margin-bottom:20px"><div style="display:flex;align-items:center;gap:10px"><span id="invoice-company-initials" style="width:38px;height:38px;border:3px solid #08614d;border-radius:50%;display:grid;place-items:center;color:#b38a35;font-weight:700">AV</span><div><b id="invoice-company-name" style="font-family:Georgia,serif;font-size:16px">AV COMPANY INC</b><small style="display:block;color:#78817e;margin-top:3px">Create billing document</small></div></div><h2 id="modal-title" style="font-family:Georgia,serif;color:#08614d;letter-spacing:2px;margin:0;font-size:30px">INVOICE</h2></div>
       <form id="invoice-form">
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;border:1px solid #21745f;border-radius:10px;padding:18px;margin-bottom:18px"><label>Customer<select id="customer-select"><option>Walk-in customer</option><option>Harper &amp; Co.</option><option>Northline Studio</option><option>Meadow Pharmacy</option></select></label>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;border:1px solid #21745f;border-radius:10px;padding:18px;margin-bottom:18px"><label>Invoice type<select id="invoice-type"><option value="simplified">Simplified tax invoice (retail)</option><option value="standard">Standard tax invoice (business)</option></select></label>
+        <label>Customer<select id="customer-select"><option>Walk-in customer</option><option>Harper &amp; Co.</option><option>Northline Studio</option><option>Meadow Pharmacy</option></select></label>
         <label>Invoice number<input id="invoice-number" readonly /></label>
         </div>
         <div style="display:flex;gap:8px;margin:8px 0"><input id="scan-input" placeholder="▥ Scan barcode / SKU and press Enter" autocomplete="off" style="flex:1;padding:8px;border:1px solid #d4ded7;border-radius:6px" /><button class="date-chip" id="scan-camera" type="button" hidden>📷 Camera</button></div>
@@ -136,9 +137,14 @@
       <button class="modal-close" id="customer-modal-close">×</button>
       <div class="modal-kicker">Customer directory</div><h2 id="customer-modal-title">Add customer</h2><p class="modal-copy">Save customer contact, VAT, and address details for future invoices.</p>
       <form id="customer-form">
+        <label>Customer type<select id="customer-type"><option value="individual">Individual / retail</option><option value="business">Business</option></select></label>
         <label>Customer name<input id="customer-name" required placeholder="e.g. Harper &amp; Co." /></label>
-        <div class="form-grid"><label>Mobile number<input id="customer-mobile" required type="tel" placeholder="e.g. 05XXXXXXXX" /></label><label>VAT number<input id="customer-vat" placeholder="e.g. 3XXXXXXXXXXXXX3" /></label></div>
-        <label>Address<textarea id="customer-address" required rows="3" placeholder="Street, city, country"></textarea></label>
+        <div class="form-grid"><label>Mobile number<input id="customer-mobile" type="tel" autocomplete="tel" placeholder="e.g. 05XXXXXXXX" /></label><label>Email<input id="customer-email" type="email" autocomplete="email" placeholder="name@example.com" /></label></div>
+        <div id="business-customer-fields" hidden>
+          <label>Registered legal name<input id="customer-legal-name" autocomplete="organization" placeholder="As registered with the authorities" /></label>
+          <label>VAT registration number<input id="customer-vat" inputmode="numeric" pattern="3[0-9]{13}3" title="Enter the 15-digit Saudi VAT number beginning and ending with 3." placeholder="3XXXXXXXXXXXXX3" /></label>
+          <label>Registered business address<textarea id="customer-address" rows="3" placeholder="Building, street, district, city, postal code"></textarea></label>
+        </div>
         <button class="primary-btn full" type="submit">Save customer <span>→</span></button>
       </form>
     </section>
@@ -155,9 +161,9 @@
       </form>
     </section>
   </div>
-  <script>if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js?v=76');</script>
+  <script>if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js?v=77');</script>
   <script src="qrcode.js?v=1"></script>
-<script src="app.js?v=149"></script>
+<script src="app.js?v=150"></script>
 <script src="i18n.js?v=7"></script>
 </body>
 </html>
