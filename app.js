@@ -865,6 +865,14 @@ document.addEventListener('click', event => {
 let accountingAccounts = [];
 let trialBalanceRows = [];
 let accountingError = '';
+const accountingToday = new Date();
+const accountingLocalDate = date => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+const accountingReportRange = { from: `${accountingToday.getFullYear()}-${String(accountingToday.getMonth() + 1).padStart(2, '0')}-01`, to: accountingLocalDate(accountingToday), asOf: accountingLocalDate(accountingToday) };
+let profitLossReport = null;
+let balanceSheetReport = null;
+let cashFlowReport = null;
+let bankReconciliation = null;
+let bankReconciliationAccountId = null;
 function accountingRequest(path, options = {}) {
 	return fetch(path, { ...options, headers: { ...(options.body ? { 'Content-Type': 'application/json' } : {}), ...(options.headers || {}) } }).then(async response => {
 		const result = await response.json();
@@ -937,6 +945,48 @@ function renderTrialBalance() {
 	const rows = trialBalanceRows.map(row => `<tr><td><b>${escHtml(row.code)}</b></td><td>${escHtml(row.name)}</td><td>${money(row.debit)}</td><td>${money(row.credit)}</td><td>${row.balance ? `${money(row.balance)} ${row.balance_side}` : '—'}</td></tr>`).join('') || '<tr><td colspan="5">No account balances for this period.</td></tr>';
 	return `<div class="page-heading"><div><div class="eyebrow">Accounting report</div><h1>Trial balance</h1><p>Posted journal debits and credits for the selected period. All company accounts are included.</p></div><div><button type="button" class="date-chip" id="trial-balance-csv">Export Excel / CSV</button> <button type="button" class="date-chip" id="trial-balance-print">Print / PDF</button></div></div>${accountingError ? `<p role="alert" style="color:#b14f43">${escHtml(accountingError)}</p>` : ''}<section class="panel" style="margin-bottom:20px"><form id="trial-balance-filter" style="padding:16px;display:flex;gap:12px;align-items:end;flex-wrap:wrap"><label>From<input type="date" name="from" value="${escHtml(state.trialFrom || '')}" /></label><label>To<input type="date" name="to" value="${escHtml(state.trialTo || today)}" /></label><button class="primary-btn" type="submit">Run report</button></form></section><section class="panel"><div class="panel-header"><h2>Trial balance · ${escHtml(state.trialFrom || 'All dates')} to ${escHtml(state.trialTo || today)}</h2></div><div class="table-wrap"><table class="data-table" id="trial-balance-table"><thead><tr><th>Code</th><th>Account</th><th>Debits</th><th>Credits</th><th>Net balance</th></tr></thead><tbody>${rows}<tr><th colspan="2">Totals</th><th>${money(trialBalanceRows.reduce((sum, row) => sum + Number(row.debit || 0), 0))}</th><th>${money(trialBalanceRows.reduce((sum, row) => sum + Number(row.credit || 0), 0))}</th><th>${money(trialBalanceRows.reduce((sum, row) => sum + Number(row.debit || 0), 0))} / ${money(trialBalanceRows.reduce((sum, row) => sum + Number(row.credit || 0), 0))}</th></tr></tbody></table></div></section>${activityLogMarkup()}`;
 }
+function reportControlsMarkup(formId, dateField = 'from') {
+	if (dateField === 'asOf') return `<form id="${formId}" class="panel" style="padding:16px;display:flex;gap:12px;align-items:end;flex-wrap:wrap"><label>As of<input type="date" name="as_of" value="${escHtml(accountingReportRange.asOf)}" required></label><button class="primary-btn" type="submit">Run report</button></form>`;
+	return `<form id="${formId}" class="panel" style="padding:16px;display:flex;gap:12px;align-items:end;flex-wrap:wrap"><label>From<input type="date" name="from" value="${escHtml(accountingReportRange.from)}" required></label><label>To<input type="date" name="to" value="${escHtml(accountingReportRange.to)}" required></label><button class="primary-btn" type="submit">Run report</button></form>`;
+}
+function reportRowsMarkup(rows, amountFn) {
+	return rows.map(row => `<tr><td><b>${escHtml(row.code)}</b></td><td>${escHtml(row.name)}</td><td class="num">${money(amountFn(row))}</td></tr>`).join('') || '<tr><td colspan="3">No posted journal activity.</td></tr>';
+}
+function renderProfitLossReport() {
+	const report = profitLossReport;
+	const revenueRows = reportRowsMarkup(report?.revenue || [], row => row.credit - row.debit);
+	const expenseRows = reportRowsMarkup(report?.expenses || [], row => row.debit - row.credit);
+	return `<div class="page-heading"><div><div class="eyebrow">Accounting report</div><h1>Profit &amp; Loss</h1><p>Revenue and expenses from posted journal entries for the selected period.</p></div><div><button class="date-chip" id="profit-loss-csv" type="button">Export CSV</button> <button class="date-chip" id="profit-loss-print" type="button">Print / PDF</button></div></div>${accountingError ? `<p role="alert" style="color:#b14f43">${escHtml(accountingError)}</p>` : ''}${reportControlsMarkup('profit-loss-filter')}<section class="stats-grid report-stats"><article class="stat-card"><span class="stat-label">Revenue</span><strong class="stat-value">${money(report?.total_revenue || 0)}</strong></article><article class="stat-card"><span class="stat-label">Gross profit</span><strong class="stat-value">${money(report?.gross_profit || 0)}</strong></article><article class="stat-card"><span class="stat-label">Expenses</span><strong class="stat-value">${money(report?.total_expenses || 0)}</strong></article><article class="stat-card"><span class="stat-label">Net profit</span><strong class="stat-value">${money(report?.net_profit || 0)}</strong></article></section><section class="panel"><div class="panel-header"><h2>Revenue</h2></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Code</th><th>Account</th><th>Amount</th></tr></thead><tbody>${revenueRows}<tr><th colspan="2">Total revenue</th><th>${money(report?.total_revenue || 0)}</th></tr></tbody></table></div><div class="panel-header"><h2>Expenses</h2></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Code</th><th>Account</th><th>Amount</th></tr></thead><tbody>${expenseRows}<tr><th colspan="2">Total expenses</th><th>${money(report?.total_expenses || 0)}</th></tr><tr><th colspan="2">Net profit</th><th>${money(report?.net_profit || 0)}</th></tr></tbody></table></div></section>`;
+}
+function renderBalanceSheetReport() {
+	const report = balanceSheetReport;
+	const rows = (items, creditNormal = false) => items.map(row => `<tr><td><b>${escHtml(row.code)}</b></td><td>${escHtml(row.name)}</td><td class="num">${money(creditNormal ? -row.balance : row.balance)}</td></tr>`).join('') || '<tr><td colspan="3">No posted balances.</td></tr>';
+	return `<div class="page-heading"><div><div class="eyebrow">Accounting report</div><h1>Balance sheet</h1><p>Assets, liabilities, equity, and current earnings from posted journal entries.</p></div><div><button class="date-chip" id="balance-sheet-csv" type="button">Export CSV</button> <button class="date-chip" id="balance-sheet-print" type="button">Print / PDF</button></div></div>${accountingError ? `<p role="alert" style="color:#b14f43">${escHtml(accountingError)}</p>` : ''}${reportControlsMarkup('balance-sheet-filter', 'asOf')}<section class="panel"><div class="panel-header"><h2>Assets · ${escHtml(report?.as_of || accountingReportRange.asOf)}</h2></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Code</th><th>Account</th><th>Balance</th></tr></thead><tbody>${rows(report?.assets || [])}<tr><th colspan="2">Total assets</th><th>${money(report?.total_assets || 0)}</th></tr></tbody></table></div><div class="panel-header"><h2>Liabilities</h2></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Code</th><th>Account</th><th>Balance</th></tr></thead><tbody>${rows(report?.liabilities || [], true)}<tr><th colspan="2">Total liabilities</th><th>${money(report?.total_liabilities || 0)}</th></tr></tbody></table></div><div class="panel-header"><h2>Equity</h2></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Code</th><th>Account</th><th>Balance</th></tr></thead><tbody>${rows(report?.equity || [], true)}<tr><td colspan="2">Current earnings</td><td>${money(report?.current_earnings || 0)}</td></tr><tr><th colspan="2">Total equity</th><th>${money(report?.total_equity || 0)}</th></tr><tr><th colspan="2">Liabilities + equity</th><th>${money((report?.total_liabilities || 0) + (report?.total_equity || 0))}</th></tr></tbody></table></div></section>${Math.abs(report?.balance_difference || 0) > 0.01 ? `<p role="alert" style="color:#b14f43">The balance sheet is out of balance by ${money(report.balance_difference)}. Check opening balances and journal entries.</p>` : ''}`;
+}
+function renderCashFlowReport() {
+	const report = cashFlowReport;
+	const transactions = (report?.transactions || []).map(row => `<tr><td>${escHtml(row.date)}</td><td><b>${escHtml(row.reference || '—')}</b></td><td>${escHtml(row.memo || '')}</td><td>${escHtml(row.counterpart_accounts || 'Cash transfer')}</td><td class="num">${money(row.cash_change)}</td></tr>`).join('') || '<tr><td colspan="5">No cash or bank movements in this period.</td></tr>';
+	return `<div class="page-heading"><div><div class="eyebrow">Accounting report</div><h1>Cash flow</h1><p>Cash and bank movements are calculated from posted journal entries. This report does not include unposted or unreconciled statement-only items.</p></div><div><button class="date-chip" id="cash-flow-csv" type="button">Export CSV</button> <button class="date-chip" id="cash-flow-print" type="button">Print / PDF</button></div></div>${accountingError ? `<p role="alert" style="color:#b14f43">${escHtml(accountingError)}</p>` : ''}${reportControlsMarkup('cash-flow-filter')}<section class="stats-grid report-stats"><article class="stat-card"><span class="stat-label">Opening balance</span><strong class="stat-value">${money(report?.opening_balance || 0)}</strong></article><article class="stat-card"><span class="stat-label">Cash received</span><strong class="stat-value">${money(report?.receipts || 0)}</strong></article><article class="stat-card"><span class="stat-label">Cash paid</span><strong class="stat-value">${money(report?.payments || 0)}</strong></article><article class="stat-card"><span class="stat-label">Net change</span><strong class="stat-value">${money(report?.net_change || 0)}</strong></article><article class="stat-card"><span class="stat-label">Closing balance</span><strong class="stat-value">${money(report?.closing_balance || 0)}</strong></article></section><section class="panel"><div class="panel-header"><h2>Cash and bank accounts</h2><span>${(report?.cash_accounts || []).map(account => `${escHtml(account.code)} · ${escHtml(account.name)}`).join(' &nbsp; ') || 'No cash or bank accounts found'}</span></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Date</th><th>Reference</th><th>Description</th><th>Counterpart accounts</th><th>Cash movement</th></tr></thead><tbody>${transactions}</tbody></table></div></section>`;
+}
+function renderBankReconciliation() {
+	const cashAccounts = accountingAccounts.filter(account => account.is_active && account.account_type === 'asset' && (/^10/.test(account.code) || /cash|bank/i.test(account.name)));
+	const selectedId = String(bankReconciliationAccountId || cashAccounts[0]?.id || '');
+	const accountOptions = cashAccounts.map(account => `<option value="${account.id}" ${String(account.id) === selectedId ? 'selected' : ''}>${escHtml(account.code)} · ${escHtml(account.name)}</option>`).join('');
+	const report = bankReconciliation;
+	const statementRows = (report?.statement_items || []).map(item => {
+		const candidates = (report?.unmatched_lines || []).filter(line => Math.round(Number(line.amount) * 100) === Math.round(Number(item.amount) * 100));
+		const matchControl = item.matched_journal_line_id
+			? `<span>${escHtml(item.matched_date || '')} · ${escHtml(item.matched_reference || item.matched_memo || 'Matched')}</span> <button class="date-chip bank-unmatch" type="button" data-item-id="${item.id}">Unmatch</button>`
+			: candidates.length
+				? `<select class="bank-match-line" aria-label="Select ledger entry"><option value="">Choose matching ledger entry</option>${candidates.map(line => `<option value="${line.id}">${escHtml(line.date)} · ${escHtml(line.reference || line.description || 'Journal entry')} · ${money(line.amount)}</option>`).join('')}</select> <button class="date-chip bank-match" type="button" data-item-id="${item.id}">Match</button>`
+				: '<span class="status pending">Unmatched</span>';
+		return `<tr><td>${escHtml(item.date)}</td><td>${escHtml(item.description)}</td><td>${escHtml(item.reference || '—')}</td><td class="num">${money(item.amount)}</td><td>${matchControl}</td></tr>`;
+	}).join('') || '<tr><td colspan="5">Import a bank CSV or add a statement transaction to begin.</td></tr>';
+	const ledgerRows = (report?.unmatched_lines || []).map(line => `<tr><td>${escHtml(line.date)}</td><td><b>${escHtml(line.reference || '—')}</b></td><td>${escHtml(line.description || '')}</td><td class="num">${money(line.amount)}</td></tr>`).join('') || '<tr><td colspan="4">All current ledger entries are matched.</td></tr>';
+	const matchedCount = (report?.statement_items || []).filter(item => item.matched_journal_line_id).length;
+	const disabled = cashAccounts.length ? '' : 'disabled';
+	return `<div class="page-heading"><div><div class="eyebrow">Accounting</div><h1>Bank reconciliation</h1><p>Import or enter statement activity, then match it to posted entries in the selected cash or bank account. Deposits are positive; withdrawals are negative.</p></div></div>${accountingError ? `<p role="alert" style="color:#b14f43">${escHtml(accountingError)}</p>` : ''}<section class="panel" style="padding:16px;margin-bottom:16px"><label>Cash or bank account<select id="bank-account-select" required ${disabled}>${accountOptions || '<option value="">No active cash/bank accounts</option>'}</select></label></section><section class="stats-grid report-stats"><article class="stat-card"><span class="stat-label">Statement transactions</span><strong class="stat-value">${(report?.statement_items || []).length}</strong></article><article class="stat-card"><span class="stat-label">Matched</span><strong class="stat-value">${matchedCount}</strong></article><article class="stat-card"><span class="stat-label">Unmatched statement</span><strong class="stat-value">${(report?.statement_items || []).length - matchedCount}</strong></article><article class="stat-card"><span class="stat-label">Unmatched ledger</span><strong class="stat-value">${(report?.unmatched_lines || []).length}</strong></article></section><section class="panel" style="margin-bottom:16px"><div class="panel-header"><h2>Import statement CSV</h2></div><div style="padding:16px"><p>Required headers: <b>date, description, amount</b>. Optional header: <b>reference</b>. Use YYYY-MM-DD dates, positive deposits, and negative withdrawals. Imports skip exact duplicates.</p><label>CSV file<input id="bank-csv-file" type="file" accept=".csv,text/csv" ${disabled}></label></div></section><section class="panel" style="margin-bottom:16px"><div class="panel-header"><h2>Add statement transaction</h2></div><form id="bank-manual-form" style="padding:16px;display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px"><label>Date<input name="date" type="date" value="${escHtml(accountingLocalDate(new Date()))}" required ${disabled}></label><label>Description<input name="description" maxlength="300" required ${disabled}></label><label>Amount (SAR)<input name="amount" type="number" step="0.01" required placeholder="Deposit +, withdrawal −" ${disabled}></label><label>Reference<input name="reference" maxlength="120" ${disabled}></label><div><button class="primary-btn" type="submit" ${disabled}>Add transaction</button><span class="form-error" id="bank-reconciliation-message" role="status" style="margin-left:10px"></span></div></form></section><section class="panel"><div class="panel-header"><h2>Statement transactions</h2></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Date</th><th>Description</th><th>Reference</th><th>Amount</th><th>Ledger match</th></tr></thead><tbody>${statementRows}</tbody></table></div></section><section class="panel" style="margin-top:16px"><div class="panel-header"><h2>Unmatched ledger entries</h2></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Date</th><th>Reference</th><th>Description</th><th>Amount</th></tr></thead><tbody>${ledgerRows}</tbody></table></div></section>`;
+}
 async function loadAccountingData(view) {
 	accountingError = '';
 	if (view === 'trial-balance' && !state.trialTo) state.trialTo = new Date().toISOString().slice(0, 10);
@@ -952,6 +1002,20 @@ async function loadAccountingData(view) {
 			if (state.trialTo) query.set('to', state.trialTo);
 			const report = await accountingRequest(`/api/reports/trial-balance?${query}`);
 			trialBalanceRows = report.rows;
+		} else if (view === 'profit-loss') {
+			const query = new URLSearchParams({ from: accountingReportRange.from, to: accountingReportRange.to });
+			profitLossReport = await accountingRequest(`/api/reports/profit-loss?${query}`);
+		} else if (view === 'balance-sheet') {
+			balanceSheetReport = await accountingRequest(`/api/reports/balance-sheet?as_of=${encodeURIComponent(accountingReportRange.asOf)}`);
+		} else if (view === 'cash-flow') {
+			const query = new URLSearchParams({ from: accountingReportRange.from, to: accountingReportRange.to });
+			cashFlowReport = await accountingRequest(`/api/reports/cash-flow?${query}`);
+		} else if (view === 'bank-reconciliation') {
+			const cashAccounts = accountingAccounts.filter(account => account.is_active && account.account_type === 'asset' && (/^10/.test(account.code) || /cash|bank/i.test(account.name)));
+			if (!cashAccounts.some(account => account.id === Number(bankReconciliationAccountId))) bankReconciliationAccountId = cashAccounts[0]?.id || null;
+			bankReconciliation = bankReconciliationAccountId
+				? await accountingRequest(`/api/bank-reconciliation?account_id=${encodeURIComponent(bankReconciliationAccountId)}`)
+				: null;
 		}
 	} catch (error) {
 		accountingError = error.message;
@@ -961,6 +1025,55 @@ async function loadAccountingData(view) {
 		if (view === 'journal') updateJournalSummary();
 		if (view === 'trial-balance') loadActivityLog();
 	}
+}
+function runAccountingReport(form, type) {
+	const values = Object.fromEntries(new FormData(form));
+	if (type === 'balance-sheet') accountingReportRange.asOf = values.as_of;
+	else {
+		accountingReportRange.from = values.from;
+		accountingReportRange.to = values.to;
+	}
+	loadAccountingData(type);
+}
+function accountingReportRows(type) {
+	if (type === 'profit-loss') {
+		const report = profitLossReport || {};
+		return [
+			['Section', 'Code', 'Account', 'Amount'],
+			...(report.revenue || []).map(row => ['Revenue', row.code, row.name, (row.credit - row.debit).toFixed(2)]),
+			...(report.expenses || []).map(row => ['Expense', row.code, row.name, (row.debit - row.credit).toFixed(2)]),
+			['Total revenue', '', '', Number(report.total_revenue || 0).toFixed(2)],
+			['Total expenses', '', '', Number(report.total_expenses || 0).toFixed(2)],
+			['Net profit', '', '', Number(report.net_profit || 0).toFixed(2)],
+		];
+	}
+	if (type === 'balance-sheet') {
+		const report = balanceSheetReport || {};
+		const rows = [['Section', 'Code', 'Account', 'Balance']];
+		(report.assets || []).forEach(row => rows.push(['Asset', row.code, row.name, row.balance.toFixed(2)]));
+		(report.liabilities || []).forEach(row => rows.push(['Liability', row.code, row.name, (-row.balance).toFixed(2)]));
+		(report.equity || []).forEach(row => rows.push(['Equity', row.code, row.name, (-row.balance).toFixed(2)]));
+		rows.push(['Current earnings', '', '', Number(report.current_earnings || 0).toFixed(2)]);
+		rows.push(['Total assets', '', '', Number(report.total_assets || 0).toFixed(2)]);
+		rows.push(['Total liabilities and equity', '', '', (Number(report.total_liabilities || 0) + Number(report.total_equity || 0)).toFixed(2)]);
+		return rows;
+	}
+	const report = cashFlowReport || {};
+	return [
+		['Date', 'Reference', 'Description', 'Counterpart accounts', 'Cash movement'],
+		...(report.transactions || []).map(row => [row.date, row.reference || '', row.memo || '', row.counterpart_accounts || '', Number(row.cash_change).toFixed(2)]),
+		['Opening balance', '', '', '', Number(report.opening_balance || 0).toFixed(2)],
+		['Cash received', '', '', '', Number(report.receipts || 0).toFixed(2)],
+		['Cash paid', '', '', '', Number(report.payments || 0).toFixed(2)],
+		['Closing balance', '', '', '', Number(report.closing_balance || 0).toFixed(2)],
+	];
+}
+function printAccountingReport(title, rows, period) {
+	const popup = window.open('', '_blank', 'width=1000,height=800');
+	if (!popup) return;
+	const tableRows = rows.map((row, index) => `<tr>${row.map(cell => index === 0 ? `<th>${escHtml(cell)}</th>` : `<td>${escHtml(cell)}</td>`).join('')}</tr>`).join('');
+	popup.document.write(`<html><head><title>${escHtml(title)}</title><style>body{font:13px Arial;color:#17211f;margin:36px}h1{color:#08614d}table{width:100%;border-collapse:collapse;margin-top:20px}th{background:#08614d;color:#fff;text-align:left;padding:9px}td{border-bottom:1px solid #dfe7df;padding:8px}</style></head><body><h1>${escHtml(state.company?.name || 'Ledgerly')} · ${escHtml(title)}</h1><p>${escHtml(period)}</p><table>${tableRows}</table><script>window.print();<\\/script></body></html>`);
+	popup.document.close();
 }
 function runTrialBalance(from, to) {
 	state.trialFrom = from;
@@ -1089,6 +1202,99 @@ document.addEventListener('submit', async event => {
 		runTrialBalance(form.elements.from.value, form.elements.to.value);
 	}
 });
+document.addEventListener('submit', event => {
+	const form = event.target;
+	if (form.id === 'profit-loss-filter' || form.id === 'cash-flow-filter') {
+		event.preventDefault();
+		runAccountingReport(form, form.id === 'profit-loss-filter' ? 'profit-loss' : 'cash-flow');
+		return;
+	}
+	if (form.id === 'balance-sheet-filter') {
+		event.preventDefault();
+		runAccountingReport(form, 'balance-sheet');
+		return;
+	}
+	if (form.id !== 'bank-manual-form') return;
+	event.preventDefault();
+	const values = Object.fromEntries(new FormData(form));
+	const accountId = Number(bankReconciliationAccountId);
+	const button = form.querySelector('button[type="submit"]');
+	const message = document.getElementById('bank-reconciliation-message');
+	button.disabled = true;
+	message.textContent = '';
+	accountingRequest('/api/bank-reconciliation', {
+		method: 'POST',
+		body: JSON.stringify({ action: 'add', account_id: accountId, ...values }),
+	}).then(() => loadAccountingData('bank-reconciliation')).catch(error => {
+		const message = document.getElementById('bank-reconciliation-message');
+		if (message) message.textContent = error.message;
+	}).finally(() => { if (button.isConnected) button.disabled = false; });
+});
+document.addEventListener('change', async event => {
+	if (event.target.id === 'bank-account-select') {
+		bankReconciliationAccountId = Number(event.target.value) || null;
+		loadAccountingData('bank-reconciliation');
+		return;
+	}
+	if (event.target.id !== 'bank-csv-file') return;
+	const file = event.target.files?.[0];
+	if (!file) return;
+	try {
+		const response = await accountingRequest(`/api/bank-reconciliation/import?account_id=${encodeURIComponent(bankReconciliationAccountId || '')}`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'text/csv' },
+			body: await file.text(),
+		});
+		accountingError = '';
+		window.alert(`Imported ${response.imported} transaction(s); skipped ${response.skipped} duplicate(s).`);
+		await loadAccountingData('bank-reconciliation');
+	} catch (error) {
+		accountingError = error.message;
+		render();
+	}
+});
+document.addEventListener('click', async event => {
+	const matchButton = event.target.closest('.bank-match');
+	const unmatchButton = event.target.closest('.bank-unmatch');
+	if (matchButton || unmatchButton) {
+		const button = matchButton || unmatchButton;
+		const lineSelect = button.closest('tr')?.querySelector('.bank-match-line');
+		if (matchButton && !lineSelect?.value) {
+			accountingError = 'Choose a matching ledger entry first.';
+			render();
+			return;
+		}
+		try {
+			await accountingRequest('/api/bank-reconciliation', {
+				method: 'POST',
+				body: JSON.stringify({
+					action: matchButton ? 'match' : 'unmatch',
+					account_id: bankReconciliationAccountId,
+					item_id: Number(button.dataset.itemId),
+					line_id: Number(lineSelect?.value),
+				}),
+			});
+			await loadAccountingData('bank-reconciliation');
+		} catch (error) {
+			accountingError = error.message;
+			render();
+		}
+		return;
+	}
+	const reportButton = event.target.closest('#profit-loss-csv, #balance-sheet-csv, #cash-flow-csv');
+	if (reportButton) {
+		const type = reportButton.id === 'profit-loss-csv' ? 'profit-loss' : reportButton.id === 'balance-sheet-csv' ? 'balance-sheet' : 'cash-flow';
+		const dateSuffix = type === 'balance-sheet' ? accountingReportRange.asOf : accountingReportRange.from;
+		downloadFile(`ledgerly-${type}-${dateSuffix}.csv`, csvText(accountingReportRows(type)), 'text/csv;charset=utf-8');
+		return;
+	}
+	const printButton = event.target.closest('#profit-loss-print, #balance-sheet-print, #cash-flow-print');
+	if (printButton) {
+		const type = printButton.id === 'profit-loss-print' ? 'profit-loss' : printButton.id === 'balance-sheet-print' ? 'balance-sheet' : 'cash-flow';
+		const period = type === 'balance-sheet' ? `As of ${accountingReportRange.asOf}` : `${accountingReportRange.from} to ${accountingReportRange.to}`;
+		printAccountingReport(type === 'profit-loss' ? 'Profit & Loss' : type === 'balance-sheet' ? 'Balance sheet' : 'Cash flow', accountingReportRows(type), period);
+	}
+});
 function renderReports() {
 	const totalSales = state.invoices.reduce((sum, invoice) => sum + (Number(invoice.total) || 0), 0);
 	const stockIntake = state.inventoryHistory.filter(entry => entry.change > 0).reduce((sum, entry) => sum + entry.change, 0);
@@ -1118,10 +1324,10 @@ function renderQuotations() {
 	return `<div class="page-heading"><div><div class="eyebrow">Sales preparation</div><h1>Quotations</h1><p>Prepare and track customer quotations before invoicing.</p></div><button class="primary-btn" id="new-quotation-btn">＋ New quotation</button></div><section class="panel"><div class="panel-header"><h2>Quotation history (${state.quotations.length})</h2></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Quotation</th><th>Customer</th><th>Date</th><th>Valid until</th><th>Status</th><th></th></tr></thead><tbody>${rows}</tbody></table></div></section>`;
 }
 
-const ROLE_VIEWS = { admin: ['overview', 'quotations', 'invoices', 'inventory', 'delivery', 'returns', 'customers', 'purchases', 'expenses', 'reports', 'accounts', 'journal', 'trial-balance'], cashier: ['overview', 'quotations', 'invoices', 'inventory', 'delivery', 'returns'], storekeeper: ['overview', 'inventory'] };
+const ROLE_VIEWS = { admin: ['overview', 'quotations', 'invoices', 'inventory', 'delivery', 'returns', 'customers', 'purchases', 'expenses', 'reports', 'accounts', 'journal', 'trial-balance', 'profit-loss', 'balance-sheet', 'cash-flow', 'bank-reconciliation'], cashier: ['overview', 'quotations', 'invoices', 'inventory', 'delivery', 'returns'], storekeeper: ['overview', 'inventory'] };
 function currentRole() { return sessionStorage.getItem('ledgerly-role') || 'cashier'; }
 function canAccessView(view) { return (ROLE_VIEWS[currentRole()] || ROLE_VIEWS.cashier).includes(view); }
-function render() { if (!canAccessView(state.view)) state.view = (ROLE_VIEWS[currentRole()] || ROLE_VIEWS.cashier)[0]; const title = { overview:'Overview', quotations:'Quotations', invoices:'Invoices', inventory:'Inventory', delivery:'Delivery notes', returns:'Returns', customers:'Customers', purchases:'Purchases', expenses:'Expenses', reports:'Reports', accounts:'Chart of accounts', journal:'Journal entries', 'trial-balance':'Trial balance' }[state.view]; document.getElementById('page-title').textContent = title; document.getElementById('app-content').innerHTML = state.view === 'overview' ? renderOverview() : state.view === 'quotations' ? renderQuotations() : state.view === 'invoices' ? renderInvoices() : state.view === 'inventory' ? renderInventory() + renderInventoryHistory() : state.view === 'delivery' ? renderDeliveryNotes() : state.view === 'returns' ? renderReturns() : state.view === 'customers' ? renderCustomers() : state.view === 'purchases' ? renderPurchases() : state.view === 'expenses' ? renderExpenses() : state.view === 'reports' ? renderReports() : state.view === 'accounts' ? renderAccounts() : state.view === 'journal' ? renderJournal() : state.view === 'trial-balance' ? renderTrialBalance() : renderGeneric(state.view); resetDashboardMetrics(); bindViewActions(); syncRoleAccess(); syncOverviewGreeting(); syncCompanyHeader(); }
+function render() { if (!canAccessView(state.view)) state.view = (ROLE_VIEWS[currentRole()] || ROLE_VIEWS.cashier)[0]; const title = { overview:'Overview', quotations:'Quotations', invoices:'Invoices', inventory:'Inventory', delivery:'Delivery notes', returns:'Returns', customers:'Customers', purchases:'Purchases', expenses:'Expenses', reports:'Reports', accounts:'Chart of accounts', journal:'Journal entries', 'trial-balance':'Trial balance', 'profit-loss':'Profit & Loss', 'balance-sheet':'Balance sheet', 'cash-flow':'Cash flow', 'bank-reconciliation':'Bank reconciliation' }[state.view]; document.getElementById('page-title').textContent = title; document.getElementById('app-content').innerHTML = state.view === 'overview' ? renderOverview() : state.view === 'quotations' ? renderQuotations() : state.view === 'invoices' ? renderInvoices() : state.view === 'inventory' ? renderInventory() + renderInventoryHistory() : state.view === 'delivery' ? renderDeliveryNotes() : state.view === 'returns' ? renderReturns() : state.view === 'customers' ? renderCustomers() : state.view === 'purchases' ? renderPurchases() : state.view === 'expenses' ? renderExpenses() : state.view === 'reports' ? renderReports() : state.view === 'accounts' ? renderAccounts() : state.view === 'journal' ? renderJournal() : state.view === 'trial-balance' ? renderTrialBalance() : state.view === 'profit-loss' ? renderProfitLossReport() : state.view === 'balance-sheet' ? renderBalanceSheetReport() : state.view === 'cash-flow' ? renderCashFlowReport() : state.view === 'bank-reconciliation' ? renderBankReconciliation() : renderGeneric(state.view); resetDashboardMetrics(); bindViewActions(); syncRoleAccess(); syncOverviewGreeting(); syncCompanyHeader(); }
 function renderCashOpeningCard() {
 	if (state.view !== 'overview') return;
 	const grid = document.querySelector('#app-content .stats-grid');
@@ -1243,7 +1449,7 @@ function bindViewActions() {
 			state.view = view;
 			document.querySelectorAll('.nav-item').forEach(item => item.classList.toggle('active', item.dataset.view === view));
 			render();
-			if (['accounts', 'journal', 'trial-balance'].includes(view)) loadAccountingData(view);
+			if (['accounts', 'journal', 'trial-balance', 'profit-loss', 'balance-sheet', 'cash-flow', 'bank-reconciliation'].includes(view)) loadAccountingData(view);
 		});
 		bindViewActions.navigationAttached = true;
 	}

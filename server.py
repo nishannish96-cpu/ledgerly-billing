@@ -1,5 +1,7 @@
+import csv
 import gzip
 import hashlib
+import io
 import json
 import logging
 import math
@@ -12,7 +14,7 @@ import sys
 import threading
 import time
 from datetime import date as calendar_date
-from datetime import datetime
+from datetime import datetime, timedelta
 from email.message import EmailMessage
 from http.cookies import SimpleCookie
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -186,6 +188,24 @@ def initialise_database():
             )
         ''')
         database.execute('CREATE INDEX IF NOT EXISTS idx_cash_openings_company ON cash_openings (company_id, opened_at DESC)')
+        database.execute('''
+            CREATE TABLE IF NOT EXISTS bank_statement_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL REFERENCES companies(id),
+                account_id INTEGER NOT NULL REFERENCES accounts(id),
+                transaction_key TEXT NOT NULL,
+                transaction_date TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                amount_cents INTEGER NOT NULL,
+                reference TEXT NOT NULL DEFAULT '',
+                matched_journal_line_id INTEGER REFERENCES journal_lines(id),
+                imported_by INTEGER REFERENCES users(id),
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(company_id, account_id, transaction_key)
+            )
+        ''')
+        database.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_bank_statement_matched_line ON bank_statement_items (matched_journal_line_id) WHERE matched_journal_line_id IS NOT NULL')
+        database.execute('CREATE INDEX IF NOT EXISTS idx_bank_statement_account_date ON bank_statement_items (company_id, account_id, transaction_date)')
         account_columns = {row['name'] for row in database.execute('PRAGMA table_info(accounts)')}
         added_normal_balance = 'normal_balance' not in account_columns
         for column, definition in (
@@ -209,9 +229,10 @@ def initialise_database():
                 database.execute(f'ALTER TABLE journal_entries ADD COLUMN {column} {definition}')
         database.execute("UPDATE journal_entries SET entry_date = date(created_at) WHERE entry_date IS NULL OR entry_date = ''")
         database.execute('CREATE INDEX IF NOT EXISTS idx_journal_company_date ON journal_entries (company_id, status, entry_date)')
+        database.execute('DROP INDEX IF EXISTS idx_auto_journal_reference')
         database.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_auto_journal_reference ON journal_entries (company_id, reference_type, reference) "
-            "WHERE reference_type IN ('sale', 'sale_cogs', 'sale_payment', 'sale_return', 'sale_return_cogs')"
+            "WHERE reference_type IN ('sale', 'sale_cogs', 'sale_payment', 'sale_return', 'sale_return_cogs', 'purchase', 'purchase_payment', 'expense')"
         )
         database.execute('CREATE INDEX IF NOT EXISTS idx_journal_lines_account_entry ON journal_lines (account_id, journal_entry_id)')
         for user in database.execute('SELECT id, username FROM users WHERE company_id IS NULL').fetchall():
@@ -381,9 +402,12 @@ AUTOMATIC_ACCOUNTS = (
     ('1010', 'Bank', 'asset', 'debit'),
     ('1100', 'Accounts Receivable', 'asset', 'debit'),
     ('1200', 'Inventory', 'asset', 'debit'),
+    ('1300', 'VAT Recoverable', 'asset', 'debit'),
+    ('2000', 'Accounts Payable', 'liability', 'credit'),
     ('2100', 'VAT Payable', 'liability', 'credit'),
     ('4000', 'Sales Revenue', 'revenue', 'credit'),
     ('5000', 'Cost of Goods Sold', 'expense', 'debit'),
+    ('6000', 'Operating Expenses', 'expense', 'debit'),
 )
 
 
@@ -393,13 +417,13 @@ def automatic_account_ids(database, company_id):
             "INSERT OR IGNORE INTO accounts (company_id, code, name, account_type, normal_balance, is_active, description) VALUES (?, ?, ?, ?, ?, 1, 'Default account')",
             (company_id, code, name, account_type, normal_balance),
         )
+    account_codes = tuple(account[0] for account in AUTOMATIC_ACCOUNTS)
+    placeholders = ', '.join('?' for _ in account_codes)
     accounts = database.execute(
-        'SELECT id, code, is_active FROM accounts WHERE company_id = ? AND code IN (?, ?, ?, ?, ?, ?, ?)',
-        (company_id, *(account[0] for account in AUTOMATIC_ACCOUNTS)),
+        f'SELECT id, code, is_active FROM accounts WHERE company_id = ? AND code IN ({placeholders})',
+        (company_id, *account_codes),
     ).fetchall()
     account_ids = {row['code']: row['id'] for row in accounts if row['is_active']}
-    if len(account_ids) != len(AUTOMATIC_ACCOUNTS):
-        raise AutomaticJournalError('An account needed for automatic sales posting is missing or inactive. Ask an administrator to enable the default accounts.')
     return account_ids
 
 
@@ -426,12 +450,59 @@ def finite_amount(value):
     return round(amount, 2) if math.isfinite(amount) and amount >= 0 else None
 
 
+def accounting_balances(database, company_id, date_from=None, date_to=None):
+    filters = ['e.company_id = ?', "e.status = 'posted'"]
+    params = [company_id]
+    if date_from:
+        filters.append('e.entry_date >= ?')
+        params.append(date_from)
+    if date_to:
+        filters.append('e.entry_date <= ?')
+        params.append(date_to)
+    rows = database.execute(
+        f'''SELECT a.id, a.code, a.name, a.account_type, a.normal_balance, a.is_active,
+        COALESCE(SUM(CASE WHEN e.id IS NOT NULL THEN l.debit ELSE 0 END), 0) AS debit,
+        COALESCE(SUM(CASE WHEN e.id IS NOT NULL THEN l.credit ELSE 0 END), 0) AS credit
+        FROM accounts a
+        LEFT JOIN journal_lines l ON l.account_id = a.id
+        LEFT JOIN journal_entries e ON e.id = l.journal_entry_id AND {' AND '.join(filters)}
+        WHERE a.company_id = ?
+        GROUP BY a.id ORDER BY a.code COLLATE NOCASE''',
+        (*params, company_id),
+    ).fetchall()
+    return [
+        {
+            **dict(row),
+            'debit': round(float(row['debit']), 2),
+            'credit': round(float(row['credit']), 2),
+            'balance': round(float(row['debit']) - float(row['credit']), 2),
+        }
+        for row in rows
+    ]
+
+
+def is_cash_or_bank_account(account):
+    code = str(account['code']).strip().casefold()
+    name = str(account['name']).strip().casefold()
+    return code in ('1000', '1010') or 'cash' in name or 'bank' in name
+
+
+def valid_iso_date(value):
+    try:
+        return calendar_date.fromisoformat(value).isoformat() == value
+    except (TypeError, ValueError):
+        return False
+
+
 def post_automatic_journal(database, company_id, user_id, account_ids, reference_type, reference, memo, entry_date, lines):
     if database.execute(
         'SELECT 1 FROM journal_entries WHERE company_id = ? AND reference_type = ? AND reference = ?',
         (company_id, reference_type, reference),
     ).fetchone():
         return
+    missing_accounts = {code for code, debit, credit in lines if debit > 0.005 or credit > 0.005} - account_ids.keys()
+    if missing_accounts:
+        raise AutomaticJournalError(f'An account needed for automatic posting is missing or inactive ({", ".join(sorted(missing_accounts))}). Ask an administrator to enable it.')
     checked_lines = [(account_ids[code], round(debit, 2), round(credit, 2)) for code, debit, credit in lines if debit > 0.005 or credit > 0.005]
     debit_total = round(sum(line[1] for line in checked_lines), 2)
     credit_total = round(sum(line[2] for line in checked_lines), 2)
@@ -472,11 +543,15 @@ def purchase_unit_costs(workspace, sale_date):
 def post_new_workspace_transactions(database, company_id, user, previous, current):
     old_invoices = {str(item.get('no')): item for item in previous.get('invoices') or [] if isinstance(item, dict)}
     old_returns = {str(item.get('no')): item for item in previous.get('returns') or [] if isinstance(item, dict)}
+    old_purchases = {str(item.get('no')): item for item in previous.get('purchases') or [] if isinstance(item, dict) and item.get('no')}
+    old_expenses = {str(item.get('no')): item for item in previous.get('expenses') or [] if isinstance(item, dict) and item.get('no')}
     old_payment_ids = {str(item.get('id')) for item in previous.get('invoicePayments') or [] if isinstance(item, dict) and item.get('id')}
     current_invoices = {str(item.get('no')): item for item in current.get('invoices') or [] if isinstance(item, dict) and item.get('no')}
     current_returns = {str(item.get('no')): item for item in current.get('returns') or [] if isinstance(item, dict) and item.get('no')}
+    current_purchases = {str(item.get('no')): item for item in current.get('purchases') or [] if isinstance(item, dict) and item.get('no')}
+    current_expenses = {str(item.get('no')): item for item in current.get('expenses') or [] if isinstance(item, dict) and item.get('no')}
     current_payments = [item for item in current.get('invoicePayments') or [] if isinstance(item, dict) and item.get('id')]
-    if not any(reference not in old_invoices for reference in current_invoices) and not any(reference not in old_returns for reference in current_returns) and not any(str(payment.get('id')) not in old_payment_ids for payment in current_payments):
+    if not any(reference not in old_invoices for reference in current_invoices) and not any(reference not in old_returns for reference in current_returns) and not any(reference not in old_purchases for reference in current_purchases) and not any(reference not in old_expenses for reference in current_expenses) and not any(str(payment.get('id')) not in old_payment_ids for payment in current_payments) and not any(len(item.get('payments') or []) > len(old_purchases.get(reference, {}).get('payments') or []) for reference, item in current_purchases.items()):
         return
     account_ids = automatic_account_ids(database, company_id)
 
@@ -485,6 +560,108 @@ def post_new_workspace_transactions(database, company_id, user, previous, curren
         if result is None:
             raise AutomaticJournalError(message)
         return result
+
+    for purchase_number, purchase in current_purchases.items():
+        if purchase_number in old_purchases:
+            continue
+        entry_date = workspace_date(purchase.get('date'))
+        if not entry_date:
+            raise AutomaticJournalError(f'Purchase {purchase_number} has an invalid date and could not be posted.')
+        subtotal = vat = 0.0
+        purchase_items = purchase.get('items') or []
+        if not purchase_items:
+            raise AutomaticJournalError(f'Purchase {purchase_number} needs at least one item before it can be posted.')
+        for item in purchase_items:
+            if not isinstance(item, dict):
+                raise AutomaticJournalError(f'Purchase {purchase_number} contains an invalid item.')
+            quantity = amount(item.get('quantity'), f'Purchase {purchase_number} has an invalid item quantity.')
+            price = amount(item.get('price'), f'Purchase {purchase_number} has an invalid item cost.')
+            try:
+                vat_rate = float(item.get('vatRate', 0.15))
+            except (TypeError, ValueError):
+                raise AutomaticJournalError(f'Purchase {purchase_number} has an invalid VAT rate.') from None
+            if quantity <= 0 or not math.isfinite(vat_rate) or not 0 <= vat_rate <= 1:
+                raise AutomaticJournalError(f'Purchase {purchase_number} has an invalid quantity or VAT rate.')
+            subtotal += quantity * price
+            vat += quantity * price * vat_rate
+        subtotal = round(subtotal, 2)
+        vat = round(vat, 2)
+        total = amount(purchase.get('total', subtotal + vat), f'Purchase {purchase_number} has an invalid total.')
+        if total <= 0 or abs(subtotal + vat - total) > 0.05:
+            raise AutomaticJournalError(f'Purchase {purchase_number} totals do not balance; correct it before saving.')
+        purchase_lines = [('1200', subtotal, 0), ('2000', 0, total)]
+        if vat:
+            purchase_lines.insert(1, ('1300', vat, 0))
+        post_automatic_journal(
+            database, company_id, user['id'], account_ids, 'purchase', purchase_number,
+            f'Purchase {purchase_number} · {purchase.get("supplier", "")}', entry_date, purchase_lines,
+        )
+
+        payments = list(purchase.get('payments') or [])
+        if not payments and str(purchase.get('status') or '').casefold() == 'paid':
+            payments = [{'amount': total, 'date': entry_date}]
+        previous_payments = old_purchases.get(purchase_number, {}).get('payments') or []
+        prior_paid = sum(finite_amount(payment.get('amount')) or 0 for payment in previous_payments if isinstance(payment, dict))
+        for index, payment in enumerate(payments[len(previous_payments):], start=len(previous_payments)):
+            if not isinstance(payment, dict):
+                raise AutomaticJournalError(f'Purchase {purchase_number} has an invalid payment record.')
+            payment_amount = amount(payment.get('amount'), f'Purchase {purchase_number} has an invalid payment amount.')
+            payment_date = workspace_date(payment.get('date') or entry_date)
+            if payment_amount <= 0 or not payment_date or prior_paid + payment_amount > total + 0.05:
+                raise AutomaticJournalError(f'Purchase {purchase_number} has an invalid or excessive payment.')
+            prior_paid += payment_amount
+            post_automatic_journal(
+                database, company_id, user['id'], account_ids, 'purchase_payment',
+                f'{purchase_number}-{index + 1}', f'Payment for purchase {purchase_number}', payment_date,
+                [('2000', payment_amount, 0), ('1000', 0, payment_amount)],
+            )
+
+    for purchase_number, purchase in current_purchases.items():
+        old_purchase = old_purchases.get(purchase_number)
+        if not old_purchase:
+            continue
+        previous_payments = old_purchase.get('payments') or []
+        payments = purchase.get('payments') or []
+        if len(payments) <= len(previous_payments):
+            continue
+        total = amount(old_purchase.get('total', purchase.get('total')), f'Purchase {purchase_number} has an invalid total.')
+        prior_paid = sum(finite_amount(payment.get('amount')) or 0 for payment in previous_payments if isinstance(payment, dict))
+        for index, payment in enumerate(payments[len(previous_payments):], start=len(previous_payments)):
+            if not isinstance(payment, dict):
+                raise AutomaticJournalError(f'Purchase {purchase_number} has an invalid payment record.')
+            payment_amount = amount(payment.get('amount'), f'Purchase {purchase_number} has an invalid payment amount.')
+            payment_date = workspace_date(payment.get('date'))
+            if payment_amount <= 0 or not payment_date or prior_paid + payment_amount > total + 0.05:
+                raise AutomaticJournalError(f'Purchase {purchase_number} has an invalid or excessive payment.')
+            prior_paid += payment_amount
+            post_automatic_journal(
+                database, company_id, user['id'], account_ids, 'purchase_payment',
+                f'{purchase_number}-{index + 1}', f'Payment for purchase {purchase_number}', payment_date,
+                [('2000', payment_amount, 0), ('1000', 0, payment_amount)],
+            )
+
+    for expense_number, expense in current_expenses.items():
+        if expense_number in old_expenses:
+            continue
+        entry_date = workspace_date(expense.get('date'))
+        if not entry_date:
+            raise AutomaticJournalError(f'Expense {expense_number} has an invalid date and could not be posted.')
+        net = amount(expense.get('amount'), f'Expense {expense_number} has an invalid amount.')
+        try:
+            vat_rate = float(expense.get('vatRate', 0))
+        except (TypeError, ValueError):
+            raise AutomaticJournalError(f'Expense {expense_number} has an invalid VAT rate.') from None
+        if net <= 0 or not math.isfinite(vat_rate) or not 0 <= vat_rate <= 1:
+            raise AutomaticJournalError(f'Expense {expense_number} has an invalid amount or VAT rate.')
+        vat = round(net * vat_rate, 2)
+        total = round(net + vat, 2)
+        expense_lines = [('6000', net, 0), ('1000', 0, total)]
+        if vat:
+            expense_lines.insert(1, ('1300', vat, 0))
+        post_automatic_journal(
+            database, company_id, user['id'], account_ids, 'expense', expense_number,
+            f'Expense {expense_number} · {expense.get("category", "")}', entry_date, expense_lines,
+        )
 
     for invoice_number, invoice in current_invoices.items():
         if invoice_number in old_invoices:
@@ -839,9 +1016,75 @@ class LedgerlyHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
-        if path not in ('/api/register', '/api/verify-registration', '/api/resend-registration-code', '/api/forgot-password', '/api/reset-password', '/api/login', '/api/logout', '/api/update-user', '/api/update-user-role', '/api/state', '/api/accounts', '/api/journal-entries', '/api/cash-opening', '/api/admin/clear-data') and not re.fullmatch(r'/api/journal-entries/\d+/post', path):
+        if path not in ('/api/register', '/api/verify-registration', '/api/resend-registration-code', '/api/forgot-password', '/api/reset-password', '/api/login', '/api/logout', '/api/update-user', '/api/update-user-role', '/api/state', '/api/accounts', '/api/journal-entries', '/api/cash-opening', '/api/admin/clear-data', '/api/bank-reconciliation', '/api/bank-reconciliation/import') and not re.fullmatch(r'/api/journal-entries/\d+/post', path):
             return super().do_POST()
         try:
+            if path == '/api/bank-reconciliation/import':
+                length = int(self.headers.get('Content-Length', '0'))
+                if length <= 0 or length > 1_000_000:
+                    return self.send_json(400, {'error': 'Choose a CSV file smaller than 1 MB.'})
+                try:
+                    content = self.rfile.read(length).decode('utf-8-sig')
+                    reader = csv.DictReader(io.StringIO(content))
+                    if not reader.fieldnames:
+                        return self.send_json(400, {'error': 'The CSV file needs a header row.'})
+                    headers = {str(name or '').strip().casefold().replace(' ', '_'): name for name in reader.fieldnames}
+                    date_header = next((headers[key] for key in ('date', 'transaction_date', 'posting_date') if key in headers), None)
+                    description_header = next((headers[key] for key in ('description', 'details', 'narrative') if key in headers), None)
+                    amount_header = next((headers[key] for key in ('amount', 'transaction_amount') if key in headers), None)
+                    reference_header = next((headers[key] for key in ('reference', 'ref', 'transaction_reference') if key in headers), None)
+                    if not date_header or not description_header or not amount_header:
+                        return self.send_json(400, {'error': 'CSV headers must include date, description, and amount. Reference is optional.'})
+                    rows = list(reader)
+                except (UnicodeDecodeError, csv.Error):
+                    return self.send_json(400, {'error': 'The uploaded file is not a valid UTF-8 CSV.'})
+                if not rows or len(rows) > 1000:
+                    return self.send_json(400, {'error': 'The CSV must contain between 1 and 1,000 transactions.'})
+                normalized_rows = []
+                for row in rows:
+                    entry_date = workspace_date(str(row.get(date_header) or '').strip())
+                    description = str(row.get(description_header) or '').strip()[:300]
+                    amount_text = str(row.get(amount_header) or '').strip().replace(',', '').replace('SAR', '').replace('sar', '').strip()
+                    if amount_text.startswith('(') and amount_text.endswith(')'):
+                        amount_text = '-' + amount_text[1:-1]
+                    try:
+                        amount_value = float(amount_text)
+                    except (TypeError, ValueError):
+                        return self.send_json(400, {'error': 'Every CSV row needs a valid signed amount; deposits are positive and withdrawals negative.'})
+                    if not entry_date or not description or not math.isfinite(amount_value) or abs(amount_value) > 1_000_000_000_000:
+                        return self.send_json(400, {'error': 'Every CSV row needs a valid date, description, and non-zero amount.'})
+                    amount_cents = round(amount_value * 100)
+                    if amount_cents == 0:
+                        return self.send_json(400, {'error': 'Every CSV row needs a valid date, description, and non-zero amount.'})
+                    reference = str(row.get(reference_header) or '').strip()[:120] if reference_header else ''
+                    normalized_rows.append((entry_date, description, amount_cents, reference))
+                query = parse_qs(urlparse(self.path).query)
+                try:
+                    account_id = int(query.get('account_id', [''])[0])
+                except ValueError:
+                    return self.send_json(400, {'error': 'Choose a bank or cash account before importing.'})
+                with connection() as database:
+                    user = self.authenticated_user(database)
+                    if not user:
+                        return self.send_json(401, {'error': 'Please sign in again.'})
+                    if user['role'] != 'admin':
+                        return self.send_json(403, {'error': 'Only an administrator can reconcile bank statements.'})
+                    account = database.execute('SELECT id, code, name FROM accounts WHERE id = ? AND company_id = ? AND is_active = 1', (account_id, user['company_id'])).fetchone()
+                    if not account or not is_cash_or_bank_account(account):
+                        return self.send_json(400, {'error': 'Choose an active cash or bank account for reconciliation.'})
+                    imported = skipped = 0
+                    for entry_date, description, amount_cents, reference in normalized_rows:
+                        key = hashlib.sha256(json.dumps([account_id, entry_date, description.casefold(), amount_cents, reference], ensure_ascii=False).encode()).hexdigest()
+                        cursor = database.execute(
+                            'INSERT OR IGNORE INTO bank_statement_items (company_id, account_id, transaction_key, transaction_date, description, amount_cents, reference, imported_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+                            (user['company_id'], account_id, key, entry_date, description, amount_cents, reference, user['id']),
+                        )
+                        if cursor.rowcount:
+                            imported += 1
+                        else:
+                            skipped += 1
+                    log_activity(database, user['company_id'], user['username'], 'Bank statement imported', f'{account["name"]}: {imported} imported, {skipped} duplicates skipped')
+                    return self.send_json(201, {'imported': imported, 'skipped': skipped})
             payload = self.read_json()
             if path in ('/api/cash-opening', '/api/admin/clear-data'):
                 with connection() as database:
@@ -881,6 +1124,7 @@ class LedgerlyHandler(SimpleHTTPRequestHandler):
                     for key in ('quotations', 'invoices', 'invoicePayments', 'products', 'deliveryNotes', 'customers', 'suppliers', 'purchases', 'expenses', 'returns', 'inventoryHistory'):
                         reset_state[key] = []
 
+                    database.execute('DELETE FROM bank_statement_items WHERE company_id = ?', (user['company_id'],))
                     database.execute('DELETE FROM journal_lines WHERE journal_entry_id IN (SELECT id FROM journal_entries WHERE company_id = ?)', (user['company_id'],))
                     database.execute('DELETE FROM journal_entries WHERE company_id = ?', (user['company_id'],))
                     database.execute('DELETE FROM cash_openings WHERE company_id = ?', (user['company_id'],))
@@ -912,13 +1156,79 @@ class LedgerlyHandler(SimpleHTTPRequestHandler):
                     log_activity(database, user['company_id'], user['username'], 'Company data cleared', 'Business records and journal entries deleted; users, company settings, and chart of accounts retained.')
                     return self.send_json(200, {'cleared': True, 'revision': next_revision, 'data_reset_revision': next_revision})
 
-            if path in ('/api/accounts', '/api/journal-entries') or re.fullmatch(r'/api/journal-entries/\d+/post', path):
+            if path in ('/api/accounts', '/api/journal-entries', '/api/bank-reconciliation') or re.fullmatch(r'/api/journal-entries/\d+/post', path):
                 with connection() as database:
                     user = self.authenticated_user(database)
                     if not user:
                         return self.send_json(401, {'error': 'Please sign in again.'})
                     if user['role'] != 'admin':
                         return self.send_json(403, {'error': 'Only an administrator can manage accounting records.'})
+                    if path == '/api/bank-reconciliation':
+                        action = str(payload.get('action') or '')
+                        try:
+                            account_id = int(payload.get('account_id'))
+                        except (TypeError, ValueError):
+                            return self.send_json(400, {'error': 'Choose a bank or cash account.'})
+                        account = database.execute('SELECT id, code, name FROM accounts WHERE id = ? AND company_id = ? AND is_active = 1', (account_id, user['company_id'])).fetchone()
+                        if not account or not is_cash_or_bank_account(account):
+                            return self.send_json(400, {'error': 'Choose an active cash or bank account for reconciliation.'})
+                        if action == 'add':
+                            entry_date = str(payload.get('date') or '').strip()
+                            description = str(payload.get('description') or '').strip()
+                            reference = str(payload.get('reference') or '').strip()
+                            try:
+                                amount_value = float(payload.get('amount'))
+                            except (TypeError, ValueError):
+                                return self.send_json(400, {'error': 'Enter a valid signed statement amount.'})
+                            if not valid_iso_date(entry_date) or not description or len(description) > 300 or len(reference) > 120 or not math.isfinite(amount_value) or abs(amount_value) > 1_000_000_000_000 or round(amount_value * 100) == 0:
+                                return self.send_json(400, {'error': 'Enter a valid date, description, and non-zero statement amount.'})
+                            amount_cents = round(amount_value * 100)
+                            key = secrets.token_hex(24)
+                            cursor = database.execute(
+                                'INSERT INTO bank_statement_items (company_id, account_id, transaction_key, transaction_date, description, amount_cents, reference, imported_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+                                (user['company_id'], account_id, key, entry_date, description, amount_cents, reference, user['id']),
+                            )
+                            log_activity(database, user['company_id'], user['username'], 'Bank statement transaction added', f'{account["name"]}: {description} · {amount_cents / 100:.2f}')
+                            return self.send_json(201, {'id': cursor.lastrowid})
+                        if action in ('match', 'unmatch'):
+                            try:
+                                item_id = int(payload.get('item_id'))
+                            except (TypeError, ValueError):
+                                return self.send_json(400, {'error': 'Choose a statement transaction.'})
+                            item = database.execute(
+                                'SELECT id, amount_cents, matched_journal_line_id FROM bank_statement_items WHERE id = ? AND company_id = ? AND account_id = ?',
+                                (item_id, user['company_id'], account_id),
+                            ).fetchone()
+                            if not item:
+                                return self.send_json(404, {'error': 'Statement transaction was not found.'})
+                            if action == 'unmatch':
+                                if item['matched_journal_line_id'] is not None:
+                                    database.execute('UPDATE bank_statement_items SET matched_journal_line_id = NULL WHERE id = ?', (item_id,))
+                                    log_activity(database, user['company_id'], user['username'], 'Bank transaction unmatched', f'{account["name"]} · statement #{item_id}')
+                                return self.send_json(200, {'matched': False})
+                            try:
+                                line_id = int(payload.get('line_id'))
+                            except (TypeError, ValueError):
+                                return self.send_json(400, {'error': 'Choose a ledger transaction to match.'})
+                            line = database.execute(
+                                '''SELECT l.id, l.debit, l.credit, e.entry_date FROM journal_lines l
+                                JOIN journal_entries e ON e.id = l.journal_entry_id
+                                WHERE l.id = ? AND l.account_id = ? AND e.company_id = ? AND e.status = 'posted' ''',
+                                (line_id, account_id, user['company_id']),
+                            ).fetchone()
+                            if not line:
+                                return self.send_json(404, {'error': 'Ledger transaction was not found in this account.'})
+                            ledger_cents = round((float(line['debit']) - float(line['credit'])) * 100)
+                            if ledger_cents != item['amount_cents']:
+                                return self.send_json(400, {'error': 'The statement amount does not match the ledger amount.'})
+                            if item['matched_journal_line_id'] is not None:
+                                return self.send_json(409, {'error': 'This statement transaction is already matched.'})
+                            if database.execute('SELECT 1 FROM bank_statement_items WHERE matched_journal_line_id = ?', (line_id,)).fetchone():
+                                return self.send_json(409, {'error': 'That ledger transaction is already matched.'})
+                            database.execute('UPDATE bank_statement_items SET matched_journal_line_id = ? WHERE id = ?', (line_id, item_id))
+                            log_activity(database, user['company_id'], user['username'], 'Bank transaction matched', f'{account["name"]} · statement #{item_id} to journal line #{line_id}')
+                            return self.send_json(200, {'matched': True})
+                        return self.send_json(400, {'error': 'Choose add, match, or unmatch.'})
                     if path == '/api/accounts':
                         code = str(payload.get('code', '')).strip()
                         name = str(payload.get('name', '')).strip()
@@ -1273,7 +1583,12 @@ class LedgerlyHandler(SimpleHTTPRequestHandler):
                     (token_hash, user['id'], user['company_id']),
                 ).fetchone()
                 return self.send_json(200, {'opening': dict(opening) if opening else None})
-        if request.path in ('/api/accounts', '/api/journal-entries', '/api/reports/trial-balance'):
+        accounting_get_paths = (
+            '/api/accounts', '/api/journal-entries', '/api/reports/trial-balance',
+            '/api/reports/profit-loss', '/api/reports/balance-sheet', '/api/reports/cash-flow',
+            '/api/bank-reconciliation',
+        )
+        if request.path in accounting_get_paths:
             with connection() as database:
                 user = self.authenticated_user(database)
                 if not user:
@@ -1286,6 +1601,7 @@ class LedgerlyHandler(SimpleHTTPRequestHandler):
                         ('1010', 'Bank', 'asset', 'debit'),
                         ('1100', 'Accounts Receivable', 'asset', 'debit'),
                         ('1200', 'Inventory', 'asset', 'debit'),
+                        ('1300', 'VAT Recoverable', 'asset', 'debit'),
                         ('2000', 'Accounts Payable', 'liability', 'credit'),
                         ('2100', 'VAT Payable', 'liability', 'credit'),
                         ('4000', 'Sales Revenue', 'revenue', 'credit'),
@@ -1308,16 +1624,143 @@ class LedgerlyHandler(SimpleHTTPRequestHandler):
                     ).fetchall()
                     return self.send_json(200, {'entries': [dict(entry) for entry in entries]})
                 query = parse_qs(request.query)
+                if request.path == '/api/bank-reconciliation':
+                    try:
+                        account_id = int(query.get('account_id', [''])[0])
+                    except ValueError:
+                        return self.send_json(400, {'error': 'Choose a bank or cash account.'})
+                    account = database.execute('SELECT id, code, name FROM accounts WHERE id = ? AND company_id = ? AND is_active = 1', (account_id, user['company_id'])).fetchone()
+                    if not account or not is_cash_or_bank_account(account):
+                        return self.send_json(400, {'error': 'Choose an active cash or bank account for reconciliation.'})
+                    statement_items = database.execute(
+                        '''SELECT s.id, s.transaction_date AS date, s.description, s.amount_cents / 100.0 AS amount, s.reference,
+                        s.matched_journal_line_id, e.entry_date AS matched_date, e.reference AS matched_reference,
+                        e.memo AS matched_memo
+                        FROM bank_statement_items s
+                        LEFT JOIN journal_lines l ON l.id = s.matched_journal_line_id
+                        LEFT JOIN journal_entries e ON e.id = l.journal_entry_id
+                        WHERE s.company_id = ? AND s.account_id = ?
+                        ORDER BY s.transaction_date DESC, s.id DESC LIMIT 1000''',
+                        (user['company_id'], account_id),
+                    ).fetchall()
+                    unmatched_lines = database.execute(
+                        '''SELECT l.id, e.entry_date AS date, e.reference, e.memo AS description,
+                        (l.debit - l.credit) AS amount
+                        FROM journal_lines l JOIN journal_entries e ON e.id = l.journal_entry_id
+                        LEFT JOIN bank_statement_items s ON s.matched_journal_line_id = l.id
+                        WHERE l.account_id = ? AND e.company_id = ? AND e.status = 'posted' AND s.id IS NULL
+                        ORDER BY e.entry_date DESC, e.id DESC LIMIT 1000''',
+                        (account_id, user['company_id']),
+                    ).fetchall()
+                    totals = database.execute(
+                        '''SELECT COALESCE(SUM(amount_cents), 0) AS statement_cents,
+                        COALESCE(SUM(CASE WHEN matched_journal_line_id IS NOT NULL THEN amount_cents ELSE 0 END), 0) AS matched_cents
+                        FROM bank_statement_items WHERE company_id = ? AND account_id = ?''',
+                        (user['company_id'], account_id),
+                    ).fetchone()
+                    return self.send_json(200, {
+                        'account': dict(account),
+                        'statement_items': [dict(item) for item in statement_items],
+                        'unmatched_lines': [dict(line) for line in unmatched_lines],
+                        'statement_total': round(totals['statement_cents'] / 100, 2),
+                        'matched_total': round(totals['matched_cents'] / 100, 2),
+                    })
                 date_from = query.get('from', [''])[0]
                 date_to = query.get('to', [''])[0]
                 for value in (date_from, date_to):
                     if value:
-                        try:
-                            time.strptime(value, '%Y-%m-%d')
-                        except ValueError:
+                        if not valid_iso_date(value):
                             return self.send_json(400, {'error': 'Dates must use YYYY-MM-DD format.'})
                 if date_from and date_to and date_from > date_to:
                     return self.send_json(400, {'error': 'The start date must be on or before the end date.'})
+                if request.path == '/api/reports/balance-sheet':
+                    as_of = query.get('as_of', [date_to or calendar_date.today().isoformat()])[0]
+                    if not valid_iso_date(as_of):
+                        return self.send_json(400, {'error': 'The as-of date must use YYYY-MM-DD format.'})
+                    balances = accounting_balances(database, user['company_id'], date_to=as_of)
+                    assets = [row for row in balances if row['account_type'] == 'asset']
+                    liabilities = [row for row in balances if row['account_type'] == 'liability']
+                    equity = [row for row in balances if row['account_type'] == 'equity']
+                    revenue = sum(row['credit'] - row['debit'] for row in balances if row['account_type'] == 'revenue')
+                    expenses = sum(row['debit'] - row['credit'] for row in balances if row['account_type'] == 'expense')
+                    total_assets = round(sum(row['balance'] for row in assets), 2)
+                    total_liabilities = round(sum(-row['balance'] for row in liabilities), 2)
+                    posted_equity = round(sum(-row['balance'] for row in equity), 2)
+                    current_earnings = round(revenue - expenses, 2)
+                    total_equity = round(posted_equity + current_earnings, 2)
+                    return self.send_json(200, {
+                        'as_of': as_of,
+                        'assets': assets,
+                        'liabilities': liabilities,
+                        'equity': equity,
+                        'total_assets': total_assets,
+                        'total_liabilities': total_liabilities,
+                        'posted_equity': posted_equity,
+                        'current_earnings': current_earnings,
+                        'total_equity': total_equity,
+                        'balance_difference': round(total_assets - total_liabilities - total_equity, 2),
+                    })
+                if request.path == '/api/reports/profit-loss':
+                    rows = accounting_balances(database, user['company_id'], date_from, date_to)
+                    revenue = [row for row in rows if row['account_type'] == 'revenue']
+                    expenses = [row for row in rows if row['account_type'] == 'expense']
+                    total_revenue = round(sum(row['credit'] - row['debit'] for row in revenue), 2)
+                    total_expenses = round(sum(row['debit'] - row['credit'] for row in expenses), 2)
+                    cost_of_goods_sold = round(sum(
+                        row['debit'] - row['credit'] for row in expenses
+                        if str(row['code']).startswith('5') or 'cost of goods sold' in row['name'].casefold() or 'cogs' in row['name'].casefold()
+                    ), 2)
+                    return self.send_json(200, {
+                        'from': date_from,
+                        'to': date_to,
+                        'revenue': revenue,
+                        'expenses': expenses,
+                        'total_revenue': total_revenue,
+                        'total_expenses': total_expenses,
+                        'gross_profit': round(total_revenue - cost_of_goods_sold, 2),
+                        'net_profit': round(total_revenue - total_expenses, 2),
+                    })
+                if request.path == '/api/reports/cash-flow':
+                    cash_flow_to = date_to or calendar_date.today().isoformat()
+                    cash_accounts = [row for row in accounting_balances(database, user['company_id']) if row['account_type'] == 'asset' and is_cash_or_bank_account(row)]
+                    cash_ids = [row['id'] for row in cash_accounts]
+                    if not cash_ids:
+                        return self.send_json(200, {'from': date_from, 'to': cash_flow_to, 'cash_accounts': [], 'opening_balance': 0, 'receipts': 0, 'payments': 0, 'net_change': 0, 'closing_balance': 0, 'transactions': []})
+                    placeholders = ','.join('?' for _ in cash_ids)
+                    opening_date = (calendar_date.fromisoformat(date_from) - timedelta(days=1)).isoformat() if date_from else None
+                    opening_rows = accounting_balances(database, user['company_id'], date_to=opening_date) if opening_date else []
+                    opening_balance = round(sum(row['balance'] for row in opening_rows if row['id'] in cash_ids), 2)
+                    period_filters = ['e.company_id = ?', "e.status = 'posted'"]
+                    period_params = [user['company_id']]
+                    if date_from:
+                        period_filters.append('e.entry_date >= ?')
+                        period_params.append(date_from)
+                    if cash_flow_to:
+                        period_filters.append('e.entry_date <= ?')
+                        period_params.append(cash_flow_to)
+                    transactions = database.execute(
+                        f'''SELECT e.id, e.entry_date AS date, e.reference, e.memo,
+                        ROUND(SUM(CASE WHEN a.id IN ({placeholders}) THEN l.debit - l.credit ELSE 0 END), 2) AS cash_change,
+                        GROUP_CONCAT(DISTINCT CASE WHEN a.id NOT IN ({placeholders}) THEN a.name END) AS counterpart_accounts
+                        FROM journal_entries e JOIN journal_lines l ON l.journal_entry_id = e.id
+                        JOIN accounts a ON a.id = l.account_id
+                        WHERE {' AND '.join(period_filters)}
+                        GROUP BY e.id
+                        HAVING ABS(SUM(CASE WHEN a.id IN ({placeholders}) THEN l.debit - l.credit ELSE 0 END)) > 0.005
+                        ORDER BY e.entry_date, e.id LIMIT 1000''',
+                        (*cash_ids, *cash_ids, *period_params, *cash_ids),
+                    ).fetchall()
+                    receipts = round(sum(max(0, float(row['cash_change'])) for row in transactions), 2)
+                    payments = round(sum(max(0, -float(row['cash_change'])) for row in transactions), 2)
+                    net_change = round(receipts - payments, 2)
+                    closing_rows = accounting_balances(database, user['company_id'], date_to=cash_flow_to)
+                    closing_balance = round(sum(row['balance'] for row in closing_rows if row['id'] in cash_ids), 2)
+                    return self.send_json(200, {
+                        'from': date_from, 'to': cash_flow_to, 'cash_accounts': cash_accounts,
+                        'opening_balance': opening_balance, 'receipts': receipts, 'payments': payments,
+                        'net_change': net_change, 'closing_balance': closing_balance,
+                        'transactions': [dict(row) for row in transactions],
+                    })
                 filters = ['e.company_id = ?', "e.status = 'posted'"]
                 params = [user['company_id']]
                 if date_from:
