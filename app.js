@@ -1023,19 +1023,20 @@ function syncRoleAccess() {
 	});
 }
 function bindViewActions() {
-	const navigate = view => {
-		if (!canAccessView(view)) return;
-		state.view = view;
-		document.querySelectorAll('.nav-item').forEach(item => item.classList.toggle('active', item.dataset.view === view));
-		render();
-		if (['accounts', 'journal', 'trial-balance'].includes(view)) loadAccountingData(view);
-	};
-	document.querySelectorAll('[data-view-link]').forEach(element => {
-		element.onclick = () => navigate(element.dataset.viewLink);
-	});
-	document.querySelectorAll('.nav-item[data-view]').forEach(element => {
-		element.onclick = () => navigate(element.dataset.view);
-	});
+	if (!bindViewActions.navigationAttached) {
+		document.addEventListener('click', event => {
+			const target = event.target instanceof Element ? event.target.closest('.nav-item[data-view], [data-view-link]') : null;
+			if (!target) return;
+			const view = target.dataset.view || target.dataset.viewLink;
+			if (!view || !canAccessView(view)) return;
+			event.preventDefault();
+			state.view = view;
+			document.querySelectorAll('.nav-item').forEach(item => item.classList.toggle('active', item.dataset.view === view));
+			render();
+			if (['accounts', 'journal', 'trial-balance'].includes(view)) loadAccountingData(view);
+		});
+		bindViewActions.navigationAttached = true;
+	}
 	document.getElementById('new-invoice-btn').onclick = () => {
 		if (['admin', 'cashier'].includes(currentRole())) openModal();
 	};
