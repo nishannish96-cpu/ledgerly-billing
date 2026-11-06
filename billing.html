@@ -49,9 +49,35 @@
     .settings-password-row input { width: 100%; padding-right: 42px; }
     .settings-password-toggle { position: absolute; top: 50%; right: 8px; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 5px; color: #78817e; background: transparent; cursor: pointer; transform: translateY(-50%); }
     .settings-password-toggle:hover { color: #1d5d43; background: #eef8f1; }
+    .journal-details { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .journal-details label, .journal-line label { display: grid; gap: 6px; min-width: 0; color: #53625e; font-size: 12px; font-weight: 600; }
+    .journal-details input, .journal-line select, .journal-line input { width: 100%; min-width: 0; padding: 10px 11px; border: 1px solid #d4ded7; border-radius: 7px; background: #fff; color: #17211f; }
+    .journal-memo { grid-column: 1 / -1; }
+    .journal-guide { margin: 18px 0 12px; padding: 11px 13px; border-radius: 7px; background: #f1f8f2; color: #53625e; font-size: 12px; line-height: 1.5; }
+    .journal-column-headings, .journal-line { display: grid; grid-template-columns: minmax(220px, 2fr) minmax(120px, 1fr) minmax(120px, 1fr) 40px; gap: 10px; align-items: end; }
+    .journal-column-headings { padding: 0 0 7px; color: #78817e; font-size: 11px; font-weight: 700; }
+    .journal-line { padding: 10px 0; border-bottom: 1px solid #edf1ed; }
+    .journal-line .date-chip { width: 36px; min-height: 38px; padding: 6px; color: #a64c43; border-color: #e2b8b0; font-size: 18px; }
+    .journal-line .date-chip:disabled { visibility: hidden; }
+    .journal-summary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 18px; margin-top: 16px; padding: 14px 16px; border: 1px solid #dce7de; border-radius: 9px; background: #f8faf8; }
+    .journal-summary > div { display: flex; justify-content: space-between; gap: 12px; color: #53625e; font-size: 12px; }
+    .journal-summary > div b { color: #17211f; }
+    .journal-summary > strong { grid-column: 1 / -1; color: #78817e; font-size: 12px; }
+    .journal-summary[data-balanced="true"] { border-color: #a8d1b3; background: #f1f8f2; }
+    .journal-summary[data-balanced="true"] > strong { color: #277252; }
+    .journal-submit-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 14px; }
+    .journal-submit-row .form-error { color: #b14f43; font-size: 12px; }
+    #post-journal:disabled { opacity: .5; cursor: not-allowed; box-shadow: none; }
     @media (max-width: 600px) {
       .settings-modal { max-height: calc(100vh - 20px); }
       .settings-modal .form-grid { grid-template-columns: 1fr !important; }
+      .journal-column-headings { display: none; }
+      .journal-line { grid-template-columns: minmax(0, 1fr) minmax(72px, .7fr) minmax(72px, .7fr) 34px; gap: 6px; }
+      .journal-line label:first-child { grid-column: 1 / -1; }
+      .journal-line .date-chip { width: 32px; }
+      .journal-summary { gap: 8px; padding: 12px; }
+      .journal-submit-row { align-items: stretch; flex-direction: column-reverse; }
+      .journal-submit-row .primary-btn { width: 100%; }
     }
   </style>
 </head>
@@ -167,7 +193,7 @@
   </div>
   <script>if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js?v=77');</script>
   <script src="qrcode.js?v=1"></script>
-<script src="app.js?v=151"></script>
+<script src="app.js?v=152"></script>
 <script src="i18n.js?v=7"></script>
 </body>
 </html>

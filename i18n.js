@@ -3,6 +3,7 @@
 		// Navigation and shell
 		'Workspace': 'مساحة العمل', 'Overview': 'نظرة عامة', 'Quotations': 'عروض الأسعار', 'Invoices': 'الفواتير', 'Inventory': 'المخزون',
 		'Delivery notes': 'إشعارات التسليم', 'Returns': 'المرتجعات', 'Manage': 'الإدارة', 'Customers': 'العملاء', 'Reports': 'التقارير',
+		'Accounting': 'المحاسبة', 'Chart of accounts': 'دليل الحسابات', 'Journal entries': 'قيود اليومية', 'Trial balance': 'ميزان المراجعة',
 		'Need a hand?': 'تحتاج مساعدة؟', 'Explore the quick guide': 'تصفح الدليل السريع', 'Settings': 'الإعدادات', 'Administrator': 'مدير',
 		'Company profile': 'ملف الشركة', 'Open company profile': 'فتح ملف الشركة', 'Primary navigation': 'التنقل الرئيسي', 'Search': 'بحث', 'Notifications': 'الإشعارات',
 		'＋ New invoice': '＋ فاتورة جديدة', 'Create company profile': 'إنشاء ملف الشركة', 'Cashier': 'أمين الصندوق', 'Storekeeper': 'أمين المخزن', 'Admin': 'مدير', 'Company owner': 'مالك الشركة',
@@ -26,6 +27,15 @@
 		'Sl No.': 'م', 'Item name': 'اسم الصنف', 'Qty': 'الكمية', 'Unit': 'الوحدة', 'Unit price': 'سعر الوحدة', 'Discount': 'الخصم', 'Item price': 'سعر الصنف', 'VAT': 'الضريبة',
 		'Print or save as PDF': 'طباعة أو حفظ PDF', 'Create delivery note': 'إنشاء إشعار تسليم', 'Date': 'التاريخ', 'Entry': 'البيان', 'Charge': 'مدين', 'Payment': 'الدفعة', 'Balance': 'الرصيد',
 		'No payment activity yet.': 'لا توجد دفعات بعد.', 'Method': 'الطريقة',
+		'New journal entry': 'قيد يومية جديد', 'Enter each transaction once: total debits must equal total credits.': 'أدخل كل معاملة مرة واحدة: يجب أن يساوي إجمالي المدين إجمالي الدائن.',
+		'optional': 'اختياري', 'What is this entry for?': 'ما الغرض من هذا القيد؟',
+		'Receipt or document number': 'رقم الإيصال أو المستند', 'For each line, choose an account and enter an amount in either Debit or Credit (not both).': 'لكل سطر، اختر حسابا وأدخل المبلغ في المدين أو الدائن (وليس كليهما).',
+		'Account': 'الحساب', 'Debit (SAR)': 'مدين (ر.س)', 'Credit (SAR)': 'دائن (ر.س)', 'Choose an account': 'اختر حسابا',
+		'＋ Add another line': '＋ إضافة سطر آخر', 'Total debits': 'إجمالي المدين', 'Total credits': 'إجمالي الدائن',
+		'Enter a debit or credit on each line to check the balance.': 'أدخل مبلغا مدينا أو دائنا في كل سطر للتحقق من التوازن.',
+		'Complete each line with an account and one amount: debit or credit.': 'أكمل كل سطر باختيار حساب وإدخال مبلغ واحد: مدين أو دائن.',
+		'Balanced. Add a date and description to post.': 'القيد متوازن. أضف التاريخ والوصف للترحيل.', 'Balanced and ready to post.': 'القيد متوازن وجاهز للترحيل.',
+		'Post journal': 'ترحيل القيد', 'Posting…': 'جارٍ الترحيل…', 'Recent posted entries': 'أحدث القيود المرحلة',
 		// Inventory
 		'Stock control': 'التحكم بالمخزون', 'Keep every item, quantity, brand, and VAT category in view.': 'تابع كل صنف وكمية وعلامة تجارية وفئة ضريبية.',
 		'＋ Receive stock': '＋ استلام مخزون', 'Items': 'الأصناف', '⌕ Search inventory': '⌕ بحث في المخزون', 'units': 'وحدات', 'SAR': 'ر.س', 'Save': 'حفظ',

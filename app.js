@@ -839,12 +839,53 @@ function renderAccounts() {
 }
 function journalLineMarkup() {
 	const options = accountingAccounts.filter(account => account.is_active).map(account => `<option value="${account.id}">${escHtml(account.code)} · ${escHtml(account.name)}</option>`).join('');
-	return `<div class="journal-line" style="display:grid;grid-template-columns:minmax(180px,2fr) 1fr 1fr auto;gap:8px;align-items:end;margin:8px 0"><label>Account<select class="journal-account" required><option value="">Choose account</option>${options}</select></label><label>Debit<input class="journal-debit" type="number" min="0" step="0.01" value="0" required /></label><label>Credit<input class="journal-credit" type="number" min="0" step="0.01" value="0" required /></label><button class="date-chip remove-journal-line" type="button" aria-label="Remove line">×</button></div>`;
+	return `<div class="journal-line"><label>Account<select class="journal-account" required><option value="">Choose an account</option>${options}</select></label><label>Debit (SAR)<input class="journal-debit" type="number" min="0.01" step="0.01" inputmode="decimal" placeholder="0.00" /></label><label>Credit (SAR)<input class="journal-credit" type="number" min="0.01" step="0.01" inputmode="decimal" placeholder="0.00" /></label><button class="date-chip remove-journal-line" type="button" aria-label="Remove journal line" title="Remove line">×</button></div>`;
+}
+function updateJournalSummary() {
+	const summary = document.getElementById('journal-summary');
+	const form = document.getElementById('journal-form');
+	if (!summary || !form) return false;
+	let debitCents = 0;
+	let creditCents = 0;
+	let validLines = true;
+	let enteredAmount = false;
+	const lines = [...form.querySelectorAll('.journal-line')];
+	lines.forEach(line => {
+		const debitInput = line.querySelector('.journal-debit');
+		const creditInput = line.querySelector('.journal-credit');
+		const debitText = debitInput.value.trim();
+		const creditText = creditInput.value.trim();
+		const debit = debitText ? Number(debitText) : 0;
+		const credit = creditText ? Number(creditText) : 0;
+		enteredAmount ||= Boolean(debitText || creditText);
+		const validAmounts = debitInput.validity.valid && creditInput.validity.valid && Number.isFinite(debit) && Number.isFinite(credit) && debit >= 0 && credit >= 0
+			&& ((debit > 0 && creditText === '') || (credit > 0 && debitText === ''));
+		if (!line.querySelector('.journal-account').value || !validAmounts) validLines = false;
+		debitCents += Math.round(debit * 100);
+		creditCents += Math.round(credit * 100);
+	});
+	const balanced = validLines && debitCents > 0 && debitCents === creditCents;
+	const metadataComplete = Boolean(form.elements.date.value && form.elements.memo.value.trim());
+	const canPost = balanced && metadataComplete && lines.length >= 2;
+	document.getElementById('journal-debit-total').textContent = money(debitCents / 100);
+	document.getElementById('journal-credit-total').textContent = money(creditCents / 100);
+	const message = document.getElementById('journal-balance-message');
+	if (!enteredAmount) message.textContent = 'Enter a debit or credit on each line to check the balance.';
+	else if (!validLines) message.textContent = 'Complete each line with an account and one amount: debit or credit.';
+	else if (debitCents === creditCents && debitCents > 0 && !metadataComplete) message.textContent = 'Balanced. Add a date and description to post.';
+	else if (debitCents === creditCents && debitCents > 0) message.textContent = 'Balanced and ready to post.';
+	else message.textContent = `Out of balance by ${money(Math.abs(debitCents - creditCents) / 100)}${debitCents > creditCents ? ' · Debits are higher' : ' · Credits are higher'}.`;
+	summary.dataset.balanced = String(canPost);
+	const postButton = document.getElementById('post-journal');
+	postButton.disabled = !canPost;
+	form.querySelectorAll('.remove-journal-line').forEach(button => { button.disabled = lines.length <= 2; });
+	document.getElementById('journal-error').textContent = '';
+	return canPost;
 }
 function renderJournal() {
 	const today = new Date().toISOString().slice(0, 10);
 	const rows = (state.journalEntries || []).map(entry => `<tr><td>${escHtml(entry.date || '')}</td><td><b>${escHtml(entry.reference || `JE-${entry.id}`)}</b></td><td>${escHtml(entry.memo)}</td><td>${escHtml(entry.created_by || '—')}</td><td><span class="status paid">Posted</span></td></tr>`).join('') || '<tr><td colspan="5">No journal entries posted yet.</td></tr>';
-	return `<div class="page-heading"><div><div class="eyebrow">Accounting</div><h1>Journal entries</h1><p>Record balanced manual journals. Posted entries are immutable and included in the trial balance.</p></div></div>${accountingError ? `<p role="alert" style="color:#b14f43">${escHtml(accountingError)}</p>` : ''}<section class="panel" style="margin-bottom:20px"><div class="panel-header"><h2>New journal entry</h2></div><form id="journal-form" style="padding:16px"><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px"><label>Date<input name="date" type="date" required value="${today}" /></label><label>Reference<input name="reference" maxlength="80" placeholder="Optional voucher reference" /></label><label style="grid-column:1/-1">Memo<input name="memo" required maxlength="500" placeholder="Describe this journal entry" /></label></div><div id="journal-lines">${journalLineMarkup()}${journalLineMarkup()}</div><div style="display:flex;gap:10px;align-items:center;margin-top:12px"><button class="date-chip" type="button" id="add-journal-line">＋ Add line</button><button class="primary-btn" type="submit">Post journal</button><span class="form-error" id="journal-error" role="alert" style="color:#b14f43"></span></div></form></section><section class="panel"><div class="panel-header"><h2>Recent posted entries</h2></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Date</th><th>Reference</th><th>Memo</th><th>Posted by</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table></div></section>`;
+	return `<div class="page-heading"><div><div class="eyebrow">Accounting</div><h1>Journal entries</h1><p>Enter each transaction once: total debits must equal total credits.</p></div></div>${accountingError ? `<p role="alert" style="color:#b14f43">${escHtml(accountingError)}</p>` : ''}<section class="panel" style="margin-bottom:20px"><div class="panel-header"><h2>New journal entry</h2></div><form id="journal-form" style="padding:16px"><div class="journal-details"><label>Date<input name="date" type="date" required value="${today}" /></label><label>Reference <span class="item-sub">optional</span><input name="reference" maxlength="80" placeholder="Receipt or document number" /></label><label class="journal-memo">Description<input name="memo" required maxlength="500" placeholder="What is this entry for?" /></label></div><div class="journal-guide">For each line, choose an account and enter an amount in either Debit or Credit (not both).</div><div class="journal-column-headings" aria-hidden="true"><span>Account</span><span>Debit (SAR)</span><span>Credit (SAR)</span><span></span></div><div id="journal-lines">${journalLineMarkup()}${journalLineMarkup()}</div><button class="date-chip" type="button" id="add-journal-line">＋ Add another line</button><div class="journal-summary" id="journal-summary" data-balanced="false" aria-live="polite"><div><span>Total debits</span><b id="journal-debit-total">${money(0)}</b></div><div><span>Total credits</span><b id="journal-credit-total">${money(0)}</b></div><strong id="journal-balance-message">Choose accounts and enter amounts to check the balance.</strong></div><div class="journal-submit-row"><span class="form-error" id="journal-error" role="alert"></span><button class="primary-btn" id="post-journal" type="submit" disabled>Post journal</button></div></form></section><section class="panel"><div class="panel-header"><h2>Recent posted entries</h2></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Date</th><th>Reference</th><th>Description</th><th>Posted by</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table></div></section>`;
 }
 function renderTrialBalance() {
 	const today = new Date().toISOString().slice(0, 10);
@@ -872,6 +913,7 @@ async function loadAccountingData(view) {
 	}
 	if (state.view === view) {
 		render();
+		if (view === 'journal') updateJournalSummary();
 		if (view === 'trial-balance') loadActivityLog();
 	}
 }
@@ -914,12 +956,18 @@ document.addEventListener('click', async event => {
 		return;
 	}
 	if (event.target.closest('#add-journal-line')) {
-		document.getElementById('journal-lines')?.insertAdjacentHTML('beforeend', journalLineMarkup());
+		const lines = document.getElementById('journal-lines');
+		if (!lines) return;
+		lines.insertAdjacentHTML('beforeend', journalLineMarkup());
+		lines.lastElementChild?.querySelector('.journal-account').focus();
+		updateJournalSummary();
 		return;
 	}
 	const removeLine = event.target.closest('.remove-journal-line');
 	if (removeLine && document.querySelectorAll('.journal-line').length > 2) {
 		removeLine.closest('.journal-line').remove();
+		document.querySelectorAll('.remove-journal-line').forEach(button => { button.disabled = document.querySelectorAll('.journal-line').length <= 2; });
+		updateJournalSummary();
 		return;
 	}
 	if (event.target.closest('#trial-balance-csv')) {
@@ -929,11 +977,21 @@ document.addEventListener('click', async event => {
 	}
 	if (event.target.closest('#trial-balance-print')) printTrialBalance();
 });
+document.addEventListener('input', event => {
+	if (!event.target.matches('.journal-debit, .journal-credit, #journal-form input[name="date"], #journal-form input[name="memo"]')) return;
+	if (event.target.matches('.journal-debit, .journal-credit')) {
+		const row = event.target.closest('.journal-line');
+		const other = row.querySelector(event.target.matches('.journal-debit') ? '.journal-credit' : '.journal-debit');
+		if (Number(event.target.value) > 0) other.value = '';
+	}
+	updateJournalSummary();
+});
 document.addEventListener('change', event => {
 	if (event.target.matches('#account-form select[name="account_type"]')) {
 		const normalBalance = document.querySelector('#account-form select[name="normal_balance"]');
 		if (normalBalance) normalBalance.value = ['asset', 'expense'].includes(event.target.value) ? 'debit' : 'credit';
 	}
+	if (event.target.matches('.journal-account')) updateJournalSummary();
 });
 document.addEventListener('submit', async event => {
 	if (event.target.id === 'account-form') {
@@ -956,18 +1014,27 @@ document.addEventListener('submit', async event => {
 	if (event.target.id === 'journal-form') {
 		event.preventDefault();
 		const form = event.target;
+		const postButton = document.getElementById('post-journal');
+		const errorMessage = document.getElementById('journal-error');
+		if (!updateJournalSummary()) {
+			errorMessage.textContent = document.getElementById('journal-balance-message').textContent;
+			return;
+		}
 		const lines = [...form.querySelectorAll('.journal-line')].map(line => ({
 			account_id: line.querySelector('.journal-account').value,
-			debit: line.querySelector('.journal-debit').value,
-			credit: line.querySelector('.journal-credit').value,
+			debit: Number(line.querySelector('.journal-debit').value) || 0,
+			credit: Number(line.querySelector('.journal-credit').value) || 0,
 		}));
 		const payload = { date: form.elements.date.value, reference: form.elements.reference.value.trim(), memo: form.elements.memo.value.trim(), lines };
+		postButton.disabled = true;
+		postButton.textContent = 'Posting…';
 		try {
 			await accountingRequest('/api/journal-entries', { method: 'POST', body: JSON.stringify(payload) });
 			loadAccountingData('journal');
 		} catch (error) {
-			const target = document.getElementById('journal-error');
-			if (target) target.textContent = error.message;
+			errorMessage.textContent = error.message;
+			postButton.textContent = 'Post journal';
+			updateJournalSummary();
 		}
 		return;
 	}
