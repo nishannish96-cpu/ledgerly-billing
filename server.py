@@ -152,6 +152,30 @@ def initialise_database():
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
         ''')
+        account_columns = {row['name'] for row in database.execute('PRAGMA table_info(accounts)')}
+        added_normal_balance = 'normal_balance' not in account_columns
+        for column, definition in (
+            ('normal_balance', "TEXT NOT NULL DEFAULT 'debit'"),
+            ('is_active', 'INTEGER NOT NULL DEFAULT 1'),
+            ('description', "TEXT NOT NULL DEFAULT ''"),
+        ):
+            if column not in account_columns:
+                database.execute(f'ALTER TABLE accounts ADD COLUMN {column} {definition}')
+        if added_normal_balance:
+            database.execute("UPDATE accounts SET normal_balance = CASE WHEN lower(account_type) IN ('asset', 'expense') THEN 'debit' ELSE 'credit' END")
+        journal_columns = {row['name'] for row in database.execute('PRAGMA table_info(journal_entries)')}
+        for column, definition in (
+            ('entry_date', 'TEXT'),
+            ('reference', "TEXT NOT NULL DEFAULT ''"),
+            ('status', "TEXT NOT NULL DEFAULT 'posted'"),
+            ('posted_by', 'INTEGER REFERENCES users(id)'),
+            ('posted_at', 'TEXT'),
+        ):
+            if column not in journal_columns:
+                database.execute(f'ALTER TABLE journal_entries ADD COLUMN {column} {definition}')
+        database.execute("UPDATE journal_entries SET entry_date = date(created_at) WHERE entry_date IS NULL OR entry_date = ''")
+        database.execute('CREATE INDEX IF NOT EXISTS idx_journal_company_date ON journal_entries (company_id, status, entry_date)')
+        database.execute('CREATE INDEX IF NOT EXISTS idx_journal_lines_account_entry ON journal_lines (account_id, journal_entry_id)')
         for user in database.execute('SELECT id, username FROM users WHERE company_id IS NULL').fetchall():
             state_row = database.execute('SELECT state_json FROM user_states WHERE user_id = ?', (user['id'],)).fetchone()
             try:
@@ -518,10 +542,98 @@ class LedgerlyHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
-        if path not in ('/api/register', '/api/verify-registration', '/api/resend-registration-code', '/api/forgot-password', '/api/reset-password', '/api/login', '/api/logout', '/api/update-user', '/api/update-user-role', '/api/state'):
+        if path not in ('/api/register', '/api/verify-registration', '/api/resend-registration-code', '/api/forgot-password', '/api/reset-password', '/api/login', '/api/logout', '/api/update-user', '/api/update-user-role', '/api/state', '/api/accounts', '/api/journal-entries') and not re.fullmatch(r'/api/journal-entries/\d+/post', path):
             return super().do_POST()
         try:
             payload = self.read_json()
+            if path in ('/api/accounts', '/api/journal-entries') or re.fullmatch(r'/api/journal-entries/\d+/post', path):
+                with connection() as database:
+                    user = self.authenticated_user(database)
+                    if not user:
+                        return self.send_json(401, {'error': 'Please sign in again.'})
+                    if user['role'] != 'admin':
+                        return self.send_json(403, {'error': 'Only an administrator can manage accounting records.'})
+                    if path == '/api/accounts':
+                        code = str(payload.get('code', '')).strip()
+                        name = str(payload.get('name', '')).strip()
+                        account_type = str(payload.get('account_type', '')).strip().lower()
+                        normal_balance = str(payload.get('normal_balance', '')).strip().lower()
+                        description = str(payload.get('description', '')).strip()
+                        valid_types = {'asset', 'liability', 'equity', 'revenue', 'expense'}
+                        if not code or len(code) > 32 or not name or len(name) > 120 or len(description) > 500 or account_type not in valid_types:
+                            return self.send_json(400, {'error': 'Enter an account code, name, and valid account type.'})
+                        if normal_balance not in ('debit', 'credit'):
+                            normal_balance = 'debit' if account_type in ('asset', 'expense') else 'credit'
+                        duplicate = database.execute('SELECT 1 FROM accounts WHERE company_id = ? AND (code = ? COLLATE NOCASE OR name = ? COLLATE NOCASE)', (user['company_id'], code, name)).fetchone()
+                        if duplicate:
+                            return self.send_json(409, {'error': 'An account with that code or name already exists.'})
+                        cursor = database.execute(
+                            'INSERT INTO accounts (company_id, code, name, account_type, normal_balance, is_active, description) VALUES (?, ?, ?, ?, ?, 1, ?)',
+                            (user['company_id'], code, name, account_type, normal_balance, description),
+                        )
+                        log_activity(database, user['company_id'], user['username'], 'Account created', f'{code} · {name}')
+                        account = database.execute('SELECT id, code, name, account_type, normal_balance, is_active, description FROM accounts WHERE id = ?', (cursor.lastrowid,)).fetchone()
+                        return self.send_json(201, {'account': dict(account)})
+                    if path == '/api/journal-entries':
+                        entry_date = str(payload.get('date', '')).strip()
+                        try:
+                            if not re.fullmatch(r'\d{4}-\d{2}-\d{2}', entry_date):
+                                raise ValueError
+                            time.strptime(entry_date, '%Y-%m-%d')
+                        except ValueError:
+                            return self.send_json(400, {'error': 'Enter a valid journal date.'})
+                        memo = str(payload.get('memo', '')).strip()
+                        reference = str(payload.get('reference', '')).strip()
+                        lines = payload.get('lines')
+                        if not memo or len(memo) > 500 or len(reference) > 80 or not isinstance(lines, list) or len(lines) < 2 or len(lines) > 100:
+                            return self.send_json(400, {'error': 'A memo and at least two journal lines are required.'})
+                        checked_lines = []
+                        debit_total = credit_total = 0.0
+                        for line in lines:
+                            try:
+                                account_id = int(line.get('account_id'))
+                                debit = round(float(line.get('debit', 0) or 0), 2)
+                                credit = round(float(line.get('credit', 0) or 0), 2)
+                            except (AttributeError, TypeError, ValueError):
+                                return self.send_json(400, {'error': 'Each journal line needs an account and valid amounts.'})
+                            if not math.isfinite(debit) or not math.isfinite(credit) or debit < 0 or credit < 0 or (debit > 0) == (credit > 0):
+                                return self.send_json(400, {'error': 'Each journal line must have a positive debit or credit, but not both.'})
+                            account = database.execute('SELECT id FROM accounts WHERE id = ? AND company_id = ? AND is_active = 1', (account_id, user['company_id'])).fetchone()
+                            if not account:
+                                return self.send_json(400, {'error': 'Choose an active account belonging to this company.'})
+                            checked_lines.append((account_id, debit, credit))
+                            debit_total += debit
+                            credit_total += credit
+                        if debit_total <= 0 or abs(debit_total - credit_total) > 0.005:
+                            return self.send_json(400, {'error': 'Journal debits and credits must be equal and greater than zero.'})
+                        cursor = database.execute(
+                            "INSERT INTO journal_entries (company_id, reference_type, memo, created_by, entry_date, reference, status, posted_by, posted_at) VALUES (?, 'manual', ?, ?, ?, ?, 'posted', ?, CURRENT_TIMESTAMP)",
+                            (user['company_id'], memo, user['id'], entry_date, reference, user['id']),
+                        )
+                        database.executemany(
+                            'INSERT INTO journal_lines (journal_entry_id, account_id, debit, credit) VALUES (?, ?, ?, ?)',
+                            [(cursor.lastrowid, *line) for line in checked_lines],
+                        )
+                        log_activity(database, user['company_id'], user['username'], 'Journal entry posted', f"{reference or f'JE-{cursor.lastrowid}'} · {memo} · {debit_total:.2f}")
+                        return self.send_json(201, {'id': cursor.lastrowid, 'posted': True})
+                    entry_id = int(path.split('/')[3])
+                    entry = database.execute('SELECT id, status, reference, memo FROM journal_entries WHERE id = ? AND company_id = ?', (entry_id, user['company_id'])).fetchone()
+                    if not entry:
+                        return self.send_json(404, {'error': 'Journal entry was not found.'})
+                    if entry['status'] == 'posted':
+                        return self.send_json(409, {'error': 'This journal entry is already posted.'})
+                    totals = database.execute(
+                        '''SELECT COUNT(*) AS line_count, COUNT(a.id) AS account_count,
+                        COALESCE(SUM(l.debit), 0) AS debit, COALESCE(SUM(l.credit), 0) AS credit
+                        FROM journal_lines l LEFT JOIN accounts a ON a.id = l.account_id AND a.company_id = ? AND a.is_active = 1
+                        WHERE l.journal_entry_id = ?''',
+                        (user['company_id'], entry_id),
+                    ).fetchone()
+                    if totals['line_count'] < 2 or totals['line_count'] != totals['account_count'] or totals['debit'] <= 0 or abs(totals['debit'] - totals['credit']) > 0.005:
+                        return self.send_json(400, {'error': 'This journal entry is incomplete or unbalanced and cannot be posted.'})
+                    database.execute("UPDATE journal_entries SET status = 'posted', posted_by = ?, posted_at = CURRENT_TIMESTAMP WHERE id = ?", (user['id'], entry_id))
+                    log_activity(database, user['company_id'], user['username'], 'Journal entry posted', f"{entry['reference'] or f'JE-{entry_id}'} · {entry['memo']}")
+                return self.send_json(200, {'id': entry_id, 'posted': True})
             username = str(payload.get('username', '')).strip().lower()
             password = str(payload.get('password', ''))
             current_username = str(payload.get('current_username', '')).strip().lower()
@@ -766,6 +878,82 @@ class LedgerlyHandler(SimpleHTTPRequestHandler):
 
     def do_GET(self):
         request = urlparse(self.path)
+        if request.path in ('/api/accounts', '/api/journal-entries', '/api/reports/trial-balance'):
+            with connection() as database:
+                user = self.authenticated_user(database)
+                if not user:
+                    return self.send_json(401, {'error': 'Please sign in again.'})
+                if user['role'] != 'admin':
+                    return self.send_json(403, {'error': 'Only an administrator can access accounting records.'})
+                if request.path == '/api/accounts':
+                    default_accounts = (
+                        ('1000', 'Cash', 'asset', 'debit'),
+                        ('1100', 'Accounts Receivable', 'asset', 'debit'),
+                        ('1200', 'Inventory', 'asset', 'debit'),
+                        ('2000', 'Accounts Payable', 'liability', 'credit'),
+                        ('2100', 'VAT Payable', 'liability', 'credit'),
+                        ('4000', 'Sales Revenue', 'revenue', 'credit'),
+                        ('5000', 'Cost of Goods Sold', 'expense', 'debit'),
+                        ('6000', 'Operating Expenses', 'expense', 'debit'),
+                    )
+                    for code, name, account_type, normal_balance in default_accounts:
+                        database.execute(
+                            "INSERT OR IGNORE INTO accounts (company_id, code, name, account_type, normal_balance, is_active, description) VALUES (?, ?, ?, ?, ?, 1, 'Default account')",
+                            (user['company_id'], code, name, account_type, normal_balance),
+                        )
+                    accounts = database.execute('SELECT id, code, name, account_type, normal_balance, is_active, description FROM accounts WHERE company_id = ? ORDER BY code COLLATE NOCASE', (user['company_id'],)).fetchall()
+                    return self.send_json(200, {'accounts': [dict(account) for account in accounts]})
+                if request.path == '/api/journal-entries':
+                    entries = database.execute(
+                        '''SELECT e.id, e.entry_date AS date, e.reference, e.memo, e.status, e.created_at, u.username AS created_by
+                        FROM journal_entries e LEFT JOIN users u ON u.id = e.created_by
+                        WHERE e.company_id = ? AND e.status = 'posted' ORDER BY e.entry_date DESC, e.id DESC LIMIT 200''',
+                        (user['company_id'],),
+                    ).fetchall()
+                    return self.send_json(200, {'entries': [dict(entry) for entry in entries]})
+                query = parse_qs(request.query)
+                date_from = query.get('from', [''])[0]
+                date_to = query.get('to', [''])[0]
+                for value in (date_from, date_to):
+                    if value:
+                        try:
+                            time.strptime(value, '%Y-%m-%d')
+                        except ValueError:
+                            return self.send_json(400, {'error': 'Dates must use YYYY-MM-DD format.'})
+                if date_from and date_to and date_from > date_to:
+                    return self.send_json(400, {'error': 'The start date must be on or before the end date.'})
+                filters = ['e.company_id = ?', "e.status = 'posted'"]
+                params = [user['company_id']]
+                if date_from:
+                    if not re.fullmatch(r'\d{4}-\d{2}-\d{2}', date_from):
+                        return self.send_json(400, {'error': 'Dates must use YYYY-MM-DD format.'})
+                    filters.append('e.entry_date >= ?')
+                    params.append(date_from)
+                if date_to:
+                    if not re.fullmatch(r'\d{4}-\d{2}-\d{2}', date_to):
+                        return self.send_json(400, {'error': 'Dates must use YYYY-MM-DD format.'})
+                    filters.append('e.entry_date <= ?')
+                    params.append(date_to)
+                balances = database.execute(
+                    f'''SELECT a.id, a.code, a.name, a.account_type, a.normal_balance, a.is_active,
+                    COALESCE(SUM(CASE WHEN e.id IS NOT NULL THEN l.debit ELSE 0 END), 0) AS debit,
+                    COALESCE(SUM(CASE WHEN e.id IS NOT NULL THEN l.credit ELSE 0 END), 0) AS credit
+                    FROM accounts a
+                    LEFT JOIN journal_lines l ON l.account_id = a.id
+                    LEFT JOIN journal_entries e ON e.id = l.journal_entry_id AND {' AND '.join(filters)}
+                    WHERE a.company_id = ?
+                    GROUP BY a.id ORDER BY a.code COLLATE NOCASE''',
+                    (*params, user['company_id']),
+                ).fetchall()
+                rows = []
+                total_debit = total_credit = 0.0
+                for row in balances:
+                    debit, credit = float(row['debit']), float(row['credit'])
+                    net = debit - credit
+                    rows.append({**dict(row), 'debit': round(debit, 2), 'credit': round(credit, 2), 'balance': round(abs(net), 2), 'balance_side': 'debit' if net > 0.005 else 'credit' if net < -0.005 else ''})
+                    total_debit += debit
+                    total_credit += credit
+                return self.send_json(200, {'from': date_from, 'to': date_to, 'rows': rows, 'total_debit': round(total_debit, 2), 'total_credit': round(total_credit, 2)})
         if request.path == '/api/activity':
             with connection() as database:
                 user = self.authenticated_user(database)
@@ -799,6 +987,44 @@ class LedgerlyHandler(SimpleHTTPRequestHandler):
             return self.send_json(200, {'state': saved_state, 'role': user['role'], 'revision': row['revision']})
         except json.JSONDecodeError:
             return self.send_json(500, {'error': 'Stored workspace state is invalid.'})
+
+    def do_PUT(self):
+        path = urlparse(self.path).path
+        match = re.fullmatch(r'/api/accounts/(\d+)', path)
+        if not match:
+            return super().do_PUT()
+        try:
+            payload = self.read_json()
+            account_id = int(match.group(1))
+            code = str(payload.get('code', '')).strip()
+            name = str(payload.get('name', '')).strip()
+            account_type = str(payload.get('account_type', '')).strip().lower()
+            normal_balance = str(payload.get('normal_balance', '')).strip().lower()
+            description = str(payload.get('description', '')).strip()
+            is_active = payload.get('is_active')
+            valid_types = {'asset', 'liability', 'equity', 'revenue', 'expense'}
+            if not code or len(code) > 32 or not name or len(name) > 120 or len(description) > 500 or account_type not in valid_types or normal_balance not in ('debit', 'credit') or is_active not in (0, 1, False, True):
+                return self.send_json(400, {'error': 'Enter valid account details and status.'})
+            with connection() as database:
+                user = self.authenticated_user(database)
+                if not user:
+                    return self.send_json(401, {'error': 'Please sign in again.'})
+                if user['role'] != 'admin':
+                    return self.send_json(403, {'error': 'Only an administrator can manage accounting records.'})
+                account = database.execute('SELECT * FROM accounts WHERE id = ? AND company_id = ?', (account_id, user['company_id'])).fetchone()
+                if not account:
+                    return self.send_json(404, {'error': 'Account was not found.'})
+                duplicate = database.execute('SELECT 1 FROM accounts WHERE company_id = ? AND id != ? AND (code = ? COLLATE NOCASE OR name = ? COLLATE NOCASE)', (user['company_id'], account_id, code, name)).fetchone()
+                if duplicate:
+                    return self.send_json(409, {'error': 'An account with that code or name already exists.'})
+                if account_type != account['account_type'] and database.execute('SELECT 1 FROM journal_lines WHERE account_id = ? LIMIT 1', (account_id,)).fetchone():
+                    return self.send_json(409, {'error': 'Account type cannot change after it has been used in a journal entry.'})
+                database.execute('UPDATE accounts SET code = ?, name = ?, account_type = ?, normal_balance = ?, description = ?, is_active = ? WHERE id = ?', (code, name, account_type, normal_balance, description, int(is_active), account_id))
+                log_activity(database, user['company_id'], user['username'], 'Account updated', f'{account["code"]} · {account["name"]} ({account["account_type"]}, {account["normal_balance"]}, {"active" if account["is_active"] else "inactive"}) → {code} · {name} ({account_type}, {normal_balance}, {"active" if is_active else "inactive"})')
+                updated = database.execute('SELECT id, code, name, account_type, normal_balance, is_active, description FROM accounts WHERE id = ?', (account_id,)).fetchone()
+            return self.send_json(200, {'account': dict(updated)})
+        except (json.JSONDecodeError, ValueError):
+            return self.send_json(400, {'error': 'Invalid account details.'})
 
 
 if __name__ == '__main__':

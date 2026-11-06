@@ -175,6 +175,9 @@ CREATE TABLE IF NOT EXISTS accounts (
     code TEXT NOT NULL,
     name TEXT NOT NULL,
     account_type TEXT NOT NULL,
+    normal_balance TEXT NOT NULL DEFAULT 'debit',
+    is_active INTEGER NOT NULL DEFAULT 1,
+    description TEXT NOT NULL DEFAULT '',
     UNIQUE(company_id, code)
 );
 
@@ -185,7 +188,12 @@ CREATE TABLE IF NOT EXISTS journal_entries (
     reference_id INTEGER,
     memo TEXT,
     created_by INTEGER REFERENCES users(id),
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    entry_date TEXT NOT NULL DEFAULT CURRENT_DATE,
+    reference TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'posted',
+    posted_by INTEGER REFERENCES users(id),
+    posted_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS journal_lines (

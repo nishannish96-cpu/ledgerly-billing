@@ -817,6 +817,166 @@ document.addEventListener('click', event => {
 		popup.document.close();
 	}
 });
+let accountingAccounts = [];
+let trialBalanceRows = [];
+let accountingError = '';
+function accountingRequest(path, options = {}) {
+	return fetch(path, { ...options, headers: { ...(options.body ? { 'Content-Type': 'application/json' } : {}), ...(options.headers || {}) } }).then(async response => {
+		const result = await response.json();
+		if (!response.ok) throw new Error(result.error || 'Accounting request failed.');
+		return result;
+	});
+}
+function accountFormMarkup(account = {}) {
+	const selectedType = account.account_type || 'asset';
+	const normalBalance = account.normal_balance || (['asset', 'expense'].includes(selectedType) ? 'debit' : 'credit');
+	return `<section class="panel" style="margin-bottom:20px"><div class="panel-header"><h2>${account.id ? 'Edit account' : 'Add account'}</h2>${account.id ? '<button class="date-chip" type="button" id="cancel-account-edit">Cancel</button>' : ''}</div><form id="account-form" data-account-id="${account.id || ''}" style="padding:16px;display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px"><label>Account code<input name="code" required maxlength="32" value="${escHtml(account.code || '')}" placeholder="e.g. 1010" /></label><label>Account name<input name="name" required maxlength="120" value="${escHtml(account.name || '')}" placeholder="e.g. Bank" /></label><label>Type<select name="account_type">${['asset', 'liability', 'equity', 'revenue', 'expense'].map(type => `<option value="${type}" ${selectedType === type ? 'selected' : ''}>${type[0].toUpperCase() + type.slice(1)}</option>`).join('')}</select></label><label>Normal balance<select name="normal_balance"><option value="debit" ${normalBalance === 'debit' ? 'selected' : ''}>Debit</option><option value="credit" ${normalBalance === 'credit' ? 'selected' : ''}>Credit</option></select></label><label style="grid-column:1/-1">Description<input name="description" maxlength="500" value="${escHtml(account.description || '')}" placeholder="Optional account notes" /></label><div style="grid-column:1/-1"><button class="primary-btn" type="submit">${account.id ? 'Save changes' : 'Add account'}</button><span class="form-error" id="account-error" style="color:#b14f43;margin-left:10px"></span></div></form></section>`;
+}
+function renderAccounts() {
+	const editing = accountingAccounts.find(account => account.id === state.accountEditing);
+	const rows = accountingAccounts.map(account => `<tr><td><b>${escHtml(account.code)}</b></td><td>${escHtml(account.name)}${account.description ? `<small class="item-sub" style="display:block">${escHtml(account.description)}</small>` : ''}</td><td>${escHtml(account.account_type)}</td><td>${escHtml(account.normal_balance)}</td><td><span class="status ${account.is_active ? 'paid' : 'pending'}">${account.is_active ? 'Active' : 'Inactive'}</span></td><td><button class="date-chip edit-account" type="button" data-account-id="${account.id}">Edit</button> <button class="date-chip toggle-account" type="button" data-account-id="${account.id}" data-active="${account.is_active ? '1' : '0'}">${account.is_active ? 'Deactivate' : 'Activate'}</button></td></tr>`).join('') || '<tr><td colspan="6">No accounts available.</td></tr>';
+	return `<div class="page-heading"><div><div class="eyebrow">Accounting</div><h1>Chart of accounts</h1><p>Manage the accounts used to classify posted journal activity.</p></div></div>${accountingError ? `<p role="alert" style="color:#b14f43">${escHtml(accountingError)}</p>` : ''}${accountFormMarkup(editing || {})}<section class="panel"><div class="panel-header"><h2>Accounts (${accountingAccounts.length})</h2></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Code</th><th>Account</th><th>Type</th><th>Normal balance</th><th>Status</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table></div></section>`;
+}
+function journalLineMarkup() {
+	const options = accountingAccounts.filter(account => account.is_active).map(account => `<option value="${account.id}">${escHtml(account.code)} · ${escHtml(account.name)}</option>`).join('');
+	return `<div class="journal-line" style="display:grid;grid-template-columns:minmax(180px,2fr) 1fr 1fr auto;gap:8px;align-items:end;margin:8px 0"><label>Account<select class="journal-account" required><option value="">Choose account</option>${options}</select></label><label>Debit<input class="journal-debit" type="number" min="0" step="0.01" value="0" required /></label><label>Credit<input class="journal-credit" type="number" min="0" step="0.01" value="0" required /></label><button class="date-chip remove-journal-line" type="button" aria-label="Remove line">×</button></div>`;
+}
+function renderJournal() {
+	const today = new Date().toISOString().slice(0, 10);
+	const rows = (state.journalEntries || []).map(entry => `<tr><td>${escHtml(entry.date || '')}</td><td><b>${escHtml(entry.reference || `JE-${entry.id}`)}</b></td><td>${escHtml(entry.memo)}</td><td>${escHtml(entry.created_by || '—')}</td><td><span class="status paid">Posted</span></td></tr>`).join('') || '<tr><td colspan="5">No journal entries posted yet.</td></tr>';
+	return `<div class="page-heading"><div><div class="eyebrow">Accounting</div><h1>Journal entries</h1><p>Record balanced manual journals. Posted entries are immutable and included in the trial balance.</p></div></div>${accountingError ? `<p role="alert" style="color:#b14f43">${escHtml(accountingError)}</p>` : ''}<section class="panel" style="margin-bottom:20px"><div class="panel-header"><h2>New journal entry</h2></div><form id="journal-form" style="padding:16px"><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px"><label>Date<input name="date" type="date" required value="${today}" /></label><label>Reference<input name="reference" maxlength="80" placeholder="Optional voucher reference" /></label><label style="grid-column:1/-1">Memo<input name="memo" required maxlength="500" placeholder="Describe this journal entry" /></label></div><div id="journal-lines">${journalLineMarkup()}${journalLineMarkup()}</div><div style="display:flex;gap:10px;align-items:center;margin-top:12px"><button class="date-chip" type="button" id="add-journal-line">＋ Add line</button><button class="primary-btn" type="submit">Post journal</button><span class="form-error" id="journal-error" role="alert" style="color:#b14f43"></span></div></form></section><section class="panel"><div class="panel-header"><h2>Recent posted entries</h2></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Date</th><th>Reference</th><th>Memo</th><th>Posted by</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table></div></section>`;
+}
+function renderTrialBalance() {
+	const today = new Date().toISOString().slice(0, 10);
+	const rows = trialBalanceRows.map(row => `<tr><td><b>${escHtml(row.code)}</b></td><td>${escHtml(row.name)}</td><td>${money(row.debit)}</td><td>${money(row.credit)}</td><td>${row.balance ? `${money(row.balance)} ${row.balance_side}` : '—'}</td></tr>`).join('') || '<tr><td colspan="5">No account balances for this period.</td></tr>';
+	return `<div class="page-heading"><div><div class="eyebrow">Accounting report</div><h1>Trial balance</h1><p>Posted journal debits and credits for the selected period. All company accounts are included.</p></div><div><button type="button" class="date-chip" id="trial-balance-csv">Export Excel / CSV</button> <button type="button" class="date-chip" id="trial-balance-print">Print / PDF</button></div></div>${accountingError ? `<p role="alert" style="color:#b14f43">${escHtml(accountingError)}</p>` : ''}<section class="panel" style="margin-bottom:20px"><form id="trial-balance-filter" style="padding:16px;display:flex;gap:12px;align-items:end;flex-wrap:wrap"><label>From<input type="date" name="from" value="${escHtml(state.trialFrom || '')}" /></label><label>To<input type="date" name="to" value="${escHtml(state.trialTo || today)}" /></label><button class="primary-btn" type="submit">Run report</button></form></section><section class="panel"><div class="panel-header"><h2>Trial balance · ${escHtml(state.trialFrom || 'All dates')} to ${escHtml(state.trialTo || today)}</h2></div><div class="table-wrap"><table class="data-table" id="trial-balance-table"><thead><tr><th>Code</th><th>Account</th><th>Debits</th><th>Credits</th><th>Net balance</th></tr></thead><tbody>${rows}<tr><th colspan="2">Totals</th><th>${money(trialBalanceRows.reduce((sum, row) => sum + Number(row.debit || 0), 0))}</th><th>${money(trialBalanceRows.reduce((sum, row) => sum + Number(row.credit || 0), 0))}</th><th>${money(trialBalanceRows.reduce((sum, row) => sum + Number(row.debit || 0), 0))} / ${money(trialBalanceRows.reduce((sum, row) => sum + Number(row.credit || 0), 0))}</th></tr></tbody></table></div></section>${activityLogMarkup()}`;
+}
+async function loadAccountingData(view) {
+	accountingError = '';
+	if (view === 'trial-balance' && !state.trialTo) state.trialTo = new Date().toISOString().slice(0, 10);
+	try {
+		const result = await accountingRequest('/api/accounts');
+		accountingAccounts = result.accounts;
+		if (view === 'journal') {
+			const journals = await accountingRequest('/api/journal-entries');
+			state.journalEntries = journals.entries;
+		} else if (view === 'trial-balance') {
+			const query = new URLSearchParams();
+			if (state.trialFrom) query.set('from', state.trialFrom);
+			if (state.trialTo) query.set('to', state.trialTo);
+			const report = await accountingRequest(`/api/reports/trial-balance?${query}`);
+			trialBalanceRows = report.rows;
+		}
+	} catch (error) {
+		accountingError = error.message;
+	}
+	if (state.view === view) {
+		render();
+		if (view === 'trial-balance') loadActivityLog();
+	}
+}
+function runTrialBalance(from, to) {
+	state.trialFrom = from;
+	state.trialTo = to;
+	loadAccountingData('trial-balance');
+}
+function printTrialBalance() {
+	const rows = trialBalanceRows.map(row => `<tr><td>${escHtml(row.code)}</td><td>${escHtml(row.name)}</td><td>${money(row.debit)}</td><td>${money(row.credit)}</td><td>${row.balance ? `${money(row.balance)} ${row.balance_side}` : '—'}</td></tr>`).join('');
+	const popup = window.open('', '_blank', 'width=1000,height=800');
+	if (!popup) return;
+	popup.document.write(`<html><head><title>Trial balance</title><style>body{font:13px Arial;color:#17211f;margin:36px}h1{color:#08614d}table{width:100%;border-collapse:collapse;margin-top:20px}th{background:#08614d;color:#fff;text-align:left;padding:9px}td{border-bottom:1px solid #dfe7df;padding:8px}</style></head><body><h1>Trial balance</h1><p>${escHtml(state.company?.name || 'Ledgerly')} · ${escHtml(state.trialFrom || 'All dates')} to ${escHtml(state.trialTo || new Date().toISOString().slice(0, 10))}</p><table><thead><tr><th>Code</th><th>Account</th><th>Debits</th><th>Credits</th><th>Net balance</th></tr></thead><tbody>${rows}<tr><th colspan="2">Totals</th><th>${money(trialBalanceRows.reduce((sum, row) => sum + Number(row.debit || 0), 0))}</th><th>${money(trialBalanceRows.reduce((sum, row) => sum + Number(row.credit || 0), 0))}</th><th></th></tr></tbody></table><script>window.print();<\\/script></body></html>`);
+	popup.document.close();
+}
+document.addEventListener('click', async event => {
+	const editButton = event.target.closest('.edit-account');
+	if (editButton) {
+		state.accountEditing = Number(editButton.dataset.accountId);
+		render();
+		return;
+	}
+	const toggleButton = event.target.closest('.toggle-account');
+	if (toggleButton) {
+		const account = accountingAccounts.find(item => item.id === Number(toggleButton.dataset.accountId));
+		if (!account) return;
+		try {
+			await accountingRequest(`/api/accounts/${account.id}`, { method: 'PUT', body: JSON.stringify({ ...account, is_active: !account.is_active }) });
+			state.accountEditing = null;
+			loadAccountingData('accounts');
+		} catch (error) {
+			accountingError = error.message;
+			render();
+		}
+		return;
+	}
+	if (event.target.closest('#cancel-account-edit')) {
+		state.accountEditing = null;
+		render();
+		return;
+	}
+	if (event.target.closest('#add-journal-line')) {
+		document.getElementById('journal-lines')?.insertAdjacentHTML('beforeend', journalLineMarkup());
+		return;
+	}
+	const removeLine = event.target.closest('.remove-journal-line');
+	if (removeLine && document.querySelectorAll('.journal-line').length > 2) {
+		removeLine.closest('.journal-line').remove();
+		return;
+	}
+	if (event.target.closest('#trial-balance-csv')) {
+		const rows = [['Code', 'Account', 'Type', 'Debits', 'Credits', 'Net balance', 'Balance side'], ...trialBalanceRows.map(row => [row.code, row.name, row.account_type, Number(row.debit).toFixed(2), Number(row.credit).toFixed(2), Number(row.balance).toFixed(2), row.balance_side])];
+		downloadFile(`ledgerly-trial-balance-${state.trialTo || new Date().toISOString().slice(0, 10)}.csv`, csvText(rows), 'text/csv;charset=utf-8');
+		return;
+	}
+	if (event.target.closest('#trial-balance-print')) printTrialBalance();
+});
+document.addEventListener('change', event => {
+	if (event.target.matches('#account-form select[name="account_type"]')) {
+		const normalBalance = document.querySelector('#account-form select[name="normal_balance"]');
+		if (normalBalance) normalBalance.value = ['asset', 'expense'].includes(event.target.value) ? 'debit' : 'credit';
+	}
+});
+document.addEventListener('submit', async event => {
+	if (event.target.id === 'account-form') {
+		event.preventDefault();
+		const form = event.target;
+		const values = Object.fromEntries(new FormData(form));
+		const editingId = form.dataset.accountId;
+		const account = accountingAccounts.find(item => item.id === Number(editingId));
+		const payload = { ...values, is_active: account ? account.is_active : 1 };
+		try {
+			await accountingRequest(editingId ? `/api/accounts/${editingId}` : '/api/accounts', { method: editingId ? 'PUT' : 'POST', body: JSON.stringify(payload) });
+			state.accountEditing = null;
+			loadAccountingData('accounts');
+		} catch (error) {
+			const target = document.getElementById('account-error');
+			if (target) target.textContent = error.message;
+		}
+		return;
+	}
+	if (event.target.id === 'journal-form') {
+		event.preventDefault();
+		const form = event.target;
+		const lines = [...form.querySelectorAll('.journal-line')].map(line => ({
+			account_id: line.querySelector('.journal-account').value,
+			debit: line.querySelector('.journal-debit').value,
+			credit: line.querySelector('.journal-credit').value,
+		}));
+		const payload = { date: form.elements.date.value, reference: form.elements.reference.value.trim(), memo: form.elements.memo.value.trim(), lines };
+		try {
+			await accountingRequest('/api/journal-entries', { method: 'POST', body: JSON.stringify(payload) });
+			loadAccountingData('journal');
+		} catch (error) {
+			const target = document.getElementById('journal-error');
+			if (target) target.textContent = error.message;
+		}
+		return;
+	}
+	if (event.target.id === 'trial-balance-filter') {
+		event.preventDefault();
+		const form = event.target;
+		runTrialBalance(form.elements.from.value, form.elements.to.value);
+	}
+});
 function renderReports() {
 	const totalSales = state.invoices.reduce((sum, invoice) => sum + (Number(invoice.total) || 0), 0);
 	const stockIntake = state.inventoryHistory.filter(entry => entry.change > 0).reduce((sum, entry) => sum + entry.change, 0);
@@ -846,12 +1006,52 @@ function renderQuotations() {
 	return `<div class="page-heading"><div><div class="eyebrow">Sales preparation</div><h1>Quotations</h1><p>Prepare and track customer quotations before invoicing.</p></div><button class="primary-btn" id="new-quotation-btn">＋ New quotation</button></div><section class="panel"><div class="panel-header"><h2>Quotation history (${state.quotations.length})</h2></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Quotation</th><th>Customer</th><th>Date</th><th>Valid until</th><th>Status</th><th></th></tr></thead><tbody>${rows}</tbody></table></div></section>`;
 }
 
-const ROLE_VIEWS = { admin: ['overview', 'quotations', 'invoices', 'inventory', 'delivery', 'returns', 'customers', 'purchases', 'expenses', 'reports'], cashier: ['overview', 'quotations', 'invoices', 'inventory', 'delivery', 'returns'], storekeeper: ['overview', 'inventory'] };
+const ROLE_VIEWS = { admin: ['overview', 'quotations', 'invoices', 'inventory', 'delivery', 'returns', 'customers', 'purchases', 'expenses', 'reports', 'accounts', 'journal', 'trial-balance'], cashier: ['overview', 'quotations', 'invoices', 'inventory', 'delivery', 'returns'], storekeeper: ['overview', 'inventory'] };
 function currentRole() { return sessionStorage.getItem('ledgerly-role') || 'cashier'; }
 function canAccessView(view) { return (ROLE_VIEWS[currentRole()] || ROLE_VIEWS.cashier).includes(view); }
-function render() { if (!canAccessView(state.view)) state.view = (ROLE_VIEWS[currentRole()] || ROLE_VIEWS.cashier)[0]; const title = { overview:'Overview', quotations:'Quotations', invoices:'Invoices', inventory:'Inventory', delivery:'Delivery notes', returns:'Returns', customers:'Customers', purchases:'Purchases', expenses:'Expenses', reports:'Reports' }[state.view]; document.getElementById('page-title').textContent = title; document.getElementById('app-content').innerHTML = state.view === 'overview' ? renderOverview() : state.view === 'quotations' ? renderQuotations() : state.view === 'invoices' ? renderInvoices() : state.view === 'inventory' ? renderInventory() + renderInventoryHistory() : state.view === 'delivery' ? renderDeliveryNotes() : state.view === 'returns' ? renderReturns() : state.view === 'customers' ? renderCustomers() : state.view === 'purchases' ? renderPurchases() : state.view === 'expenses' ? renderExpenses() : state.view === 'reports' ? renderReports() : renderGeneric(state.view); resetDashboardMetrics(); bindViewActions(); syncRoleAccess(); syncOverviewGreeting(); syncCompanyHeader(); }
-function syncRoleAccess() { const role = currentRole(); document.querySelectorAll('.nav-item[data-view]').forEach(item => { item.hidden = !canAccessView(item.dataset.view); }); const createInvoice = document.getElementById('new-invoice-btn'); if (createInvoice) createInvoice.hidden = !['admin', 'cashier'].includes(role); if (role === 'cashier') document.querySelectorAll('.product-meta').forEach(meta => { const quantity = meta.querySelector('.quantity-input'); if (quantity) meta.replaceChildren(Object.assign(document.createElement('span'), { textContent: `${quantity.value} units` })); }); }
-function bindViewActions() { document.querySelectorAll('[data-view-link]').forEach(el => el.addEventListener('click', () => { if (!canAccessView(el.dataset.viewLink)) return; state.view = el.dataset.viewLink; document.querySelectorAll('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.view === state.view)); render(); })); document.querySelectorAll('.nav-item[data-view]').forEach(el => el.addEventListener('click', () => { if (!canAccessView(el.dataset.view)) return; state.view = el.dataset.view; document.querySelectorAll('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.view === state.view)); render(); })); document.getElementById('new-invoice-btn').onclick = () => { if (['admin', 'cashier'].includes(currentRole())) openModal(); }; document.getElementById('invoice-filter')?.addEventListener('input', event => { const q = event.target.value.toLowerCase(); document.querySelector('#invoice-table tbody').innerHTML = state.invoices.filter(i => `${escHtml(i.no)} ${escHtml(i.customer)}`.toLowerCase().includes(q)).map(inv => `<tr><td><b>${escHtml(inv.no)}</b></td><td><span class="item-name">${escHtml(inv.customer)}</span><span class="item-sub">${inv.date}</span></td><td><span class="status ${statusClass(inv.status)}">${escHtml(inv.status)}</span></td><td>${money(inv.total)} <button class="pdf-invoice" data-invoice="${escHtml(inv.no)}" title="Print or save as PDF" style="color:#08614d;border:1px solid #08614d;border-radius:5px;padding:4px 7px;margin-left:8px;font-size:11px;font-weight:700">PDF</button></td></tr>`).join(''); }); document.getElementById('inventory-filter')?.addEventListener('input', event => { const q = event.target.value.toLowerCase(); document.querySelectorAll('[data-inventory-search]').forEach(item => { item.hidden = !item.dataset.inventorySearch.includes(q); }); }); document.getElementById('returns-filter')?.addEventListener('input', event => { const content = document.querySelector('[data-returns-content]'); if (content) content.hidden = Boolean(event.target.value.trim()); }); }
+function render() { if (!canAccessView(state.view)) state.view = (ROLE_VIEWS[currentRole()] || ROLE_VIEWS.cashier)[0]; const title = { overview:'Overview', quotations:'Quotations', invoices:'Invoices', inventory:'Inventory', delivery:'Delivery notes', returns:'Returns', customers:'Customers', purchases:'Purchases', expenses:'Expenses', reports:'Reports', accounts:'Chart of accounts', journal:'Journal entries', 'trial-balance':'Trial balance' }[state.view]; document.getElementById('page-title').textContent = title; document.getElementById('app-content').innerHTML = state.view === 'overview' ? renderOverview() : state.view === 'quotations' ? renderQuotations() : state.view === 'invoices' ? renderInvoices() : state.view === 'inventory' ? renderInventory() + renderInventoryHistory() : state.view === 'delivery' ? renderDeliveryNotes() : state.view === 'returns' ? renderReturns() : state.view === 'customers' ? renderCustomers() : state.view === 'purchases' ? renderPurchases() : state.view === 'expenses' ? renderExpenses() : state.view === 'reports' ? renderReports() : state.view === 'accounts' ? renderAccounts() : state.view === 'journal' ? renderJournal() : state.view === 'trial-balance' ? renderTrialBalance() : renderGeneric(state.view); resetDashboardMetrics(); bindViewActions(); syncRoleAccess(); syncOverviewGreeting(); syncCompanyHeader(); }
+function syncRoleAccess() {
+	const role = currentRole();
+	document.querySelectorAll('.nav-item[data-view]').forEach(item => { item.hidden = !canAccessView(item.dataset.view); });
+	const accountingLabel = document.querySelector('[data-accounting-label]');
+	if (accountingLabel) accountingLabel.hidden = role !== 'admin';
+	const createInvoice = document.getElementById('new-invoice-btn');
+	if (createInvoice) createInvoice.hidden = !['admin', 'cashier'].includes(role);
+	if (role === 'cashier') document.querySelectorAll('.product-meta').forEach(meta => {
+		const quantity = meta.querySelector('.quantity-input');
+		if (quantity) meta.replaceChildren(Object.assign(document.createElement('span'), { textContent: `${quantity.value} units` }));
+	});
+}
+function bindViewActions() {
+	const navigate = view => {
+		if (!canAccessView(view)) return;
+		state.view = view;
+		document.querySelectorAll('.nav-item').forEach(item => item.classList.toggle('active', item.dataset.view === view));
+		render();
+		if (['accounts', 'journal', 'trial-balance'].includes(view)) loadAccountingData(view);
+	};
+	document.querySelectorAll('[data-view-link]').forEach(element => {
+		element.onclick = () => navigate(element.dataset.viewLink);
+	});
+	document.querySelectorAll('.nav-item[data-view]').forEach(element => {
+		element.onclick = () => navigate(element.dataset.view);
+	});
+	document.getElementById('new-invoice-btn').onclick = () => {
+		if (['admin', 'cashier'].includes(currentRole())) openModal();
+	};
+	document.getElementById('invoice-filter')?.addEventListener('input', event => {
+		const query = event.target.value.toLowerCase();
+		document.querySelector('#invoice-table tbody').innerHTML = state.invoices.filter(invoice => `${escHtml(invoice.no)} ${escHtml(invoice.customer)}`.toLowerCase().includes(query)).map(invoice => `<tr><td><b>${escHtml(invoice.no)}</b></td><td><span class="item-name">${escHtml(invoice.customer)}</span><span class="item-sub">${invoice.date}</span></td><td><span class="status ${statusClass(invoice.status)}">${escHtml(invoice.status)}</span></td><td>${money(invoice.total)} <button class="pdf-invoice" data-invoice="${escHtml(invoice.no)}" title="Print or save as PDF" style="color:#08614d;border:1px solid #08614d;border-radius:5px;padding:4px 7px;margin-left:8px;font-size:11px;font-weight:700">PDF</button></td></tr>`).join('');
+	});
+	document.getElementById('inventory-filter')?.addEventListener('input', event => {
+		const query = event.target.value.toLowerCase();
+		document.querySelectorAll('[data-inventory-search]').forEach(item => { item.hidden = !item.dataset.inventorySearch.includes(query); });
+	});
+	document.getElementById('returns-filter')?.addEventListener('input', event => {
+		const content = document.querySelector('[data-returns-content]');
+		if (content) content.hidden = Boolean(event.target.value.trim());
+	});
+}
 function invoiceItemMarkup(item = null, serial = 1) { const inventoryProduct = state.products.find(product => product.id === item?.productId || product.name === item?.product) || null; const itemName = item?.product || inventoryProduct?.name || ''; const quantity = item?.quantity || 1; const price = item?.price ?? inventoryProduct?.price ?? 0; const unit = item?.unit || inventoryProduct?.unit || 'pcs'; const discount = Number(item?.discount) || 0; const line = itemLineValues({ quantity, price, unit, discount }); return `<div class="invoice-item" style="display:grid;grid-template-columns:42px minmax(100px,2fr) 48px 48px 74px 74px 80px 74px 90px 28px;gap:4px;align-items:stretch;width:100%;min-width:0;border-bottom:1px solid #e7ebe7;padding:10px 0;margin-bottom:8px"><span class="invoice-serial" style="${entryValueBoxStyle}"><small style="display:block;color:#78817e">Sl No.</small><b>${serial}</b></span><label style="${entryValueBoxStyle}"><small>Item name</small><input style="${entryValueInputStyle}" class="invoice-product" list="invoice-product-list" value="${itemName}" placeholder="Type an item name" /></label><label style="${entryValueBoxStyle}"><small>Qty</small><input style="${entryValueInputStyle}" class="invoice-quantity" type="number" min="1" step="0.01" value="${quantity}" /></label><label style="${entryValueBoxStyle}"><small>Unit</small><input style="${entryValueInputStyle}" class="invoice-unit" value="${unit}" /></label><label style="${entryValueBoxStyle}"><small>Unit price</small><input style="${entryValueInputStyle}" class="invoice-price" type="number" min="0" step="0.01" value="${price}" /></label><label style="${entryValueBoxStyle}"><small>Discount</small><input style="${entryValueInputStyle}" class="invoice-discount" type="number" min="0" step="0.01" value="${discount}" /></label><div style="${entryValueBoxStyle}"><small>Item price</small><b class="invoice-line-net">${money(line.net)}</b></div><div style="${entryValueBoxStyle}"><small>VAT</small><b class="invoice-line-vat">${money(line.vat)}</b></div><div style="${entryValueBoxStyle}"><small>Total amount</small><b class="invoice-line-amount">${money(line.total)}</b></div><button type="button" class="remove-invoice-item" title="Remove item" style="align-self:center;height:42px;color:#b14f43;border:1px solid #e2b8b0;border-radius:5px;padding:7px 8px">×</button></div>`; }
 function bindInvoiceItems() {
 	document.querySelectorAll('.invoice-product,.invoice-quantity,.invoice-unit,.invoice-discount,.invoice-price,.invoice-vat-category').forEach(input => {
