@@ -39,6 +39,7 @@ try {
 }
 const defaultCompany = { name: '', initials: '', vat: '', phone: '', email: '', location: '', address: '' };
 let state = { view: 'overview', quotations: savedState?.quotations || [], invoices: savedState?.invoices || [], invoicePayments: savedState?.invoicePayments || [], products: savedState?.products || [], deliveryNotes: savedState?.deliveryNotes || [], customers: savedState?.customers || [], suppliers: savedState?.suppliers || [], purchases: savedState?.purchases || [], expenses: savedState?.expenses || [], returns: savedState?.returns || [], inventoryHistory: savedState?.inventoryHistory || [], company: savedState?.company || defaultCompany, credentials: savedState?.credentials || { username: activeUsername, password: '' }, users: savedState?.users || [{ username: activeUsername, password: '', role: sessionStorage.getItem('ledgerly-role') || 'admin' }] };
+let cashOpening = null;
 function normalizeWorkspaceUsers() { state.users = (Array.isArray(state.users) ? state.users : []).filter(user => user && typeof user.username === 'string'); if (!state.credentials || typeof state.credentials !== 'object') state.credentials = { username: activeUsername, password: '' }; }
 normalizeWorkspaceUsers();
 let invoiceDraft = null;
@@ -102,9 +103,25 @@ function syncThemeSettings() {
 	});
 }
 function stateSnapshot() { return { quotations: state.quotations, invoices: state.invoices, invoicePayments: state.invoicePayments, products: state.products, deliveryNotes: state.deliveryNotes, customers: state.customers, suppliers: state.suppliers, purchases: state.purchases, expenses: state.expenses, returns: state.returns, inventoryHistory: state.inventoryHistory, company: state.company, users: state.users.map(user => ({ username: user.username, role: user.role, is_owner: Boolean(user.is_owner) })) }; }
+function stateWithBaseRevision(snapshot, revision) { const result = { ...snapshot }; Object.defineProperty(result, '_baseRevision', { value: revision }); return result; }
+const stateSnapshotBeforeRevision = stateSnapshot;
+stateSnapshot = function () { return stateWithBaseRevision(stateSnapshotBeforeRevision(), lastRemoteRevision); };
 function hasWorkspaceData(snapshot) { return ['quotations', 'invoices', 'products', 'deliveryNotes', 'customers', 'suppliers', 'purchases', 'expenses', 'returns', 'inventoryHistory'].some(key => Array.isArray(snapshot?.[key]) && snapshot[key].length) || Boolean(snapshot?.company?.name); }
 function mergeWorkspaceStates(remoteState, localState) { const merged = { ...remoteState, ...localState }; const keys = { quotations: 'no', invoices: 'no', invoicePayments: 'id', products: 'id', deliveryNotes: 'no', customers: 'name', suppliers: 'name', purchases: 'no', expenses: 'no', returns: 'no', users: 'username' }; Object.entries(keys).forEach(([key, id]) => { const records = new Map(); [...(remoteState?.[key] || []), ...(localState?.[key] || [])].forEach(record => { if (record) records.set(String(record[id] || JSON.stringify(record)), record); }); merged[key] = [...records.values()]; }); const movements = new Map(); [...(remoteState?.inventoryHistory || []), ...(localState?.inventoryHistory || [])].forEach(record => movements.set(JSON.stringify([record.date, record.sku, record.change, record.reason, record.reference]), record)); merged.inventoryHistory = [...movements.values()]; merged.company = Object.fromEntries([...new Set([...Object.keys(remoteState?.company || {}), ...Object.keys(localState?.company || {})])].map(key => [key, localState?.company?.[key] || remoteState?.company?.[key] || ''])); return merged; }
-function syncStateToServer(snapshot) { serverSyncQueue = serverSyncQueue.catch(() => {}).then(async () => { let lastError; for (let attempt = 0; attempt < 3; attempt += 1) { try { const response = await fetch('/api/state', { method: 'POST', keepalive: true, headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sessionStorage.getItem('ledgerly-token') || ''}` }, body: JSON.stringify({ state: snapshot }) }); if (!response.ok) throw new Error('Workspace sync failed.'); const result = await response.json(); lastRemoteRevision = Math.max(lastRemoteRevision, Number(result.revision) || 0); return result; } catch (error) { lastError = error; if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 500 * (2 ** attempt))); } } throw lastError; }); return serverSyncQueue; }
+const mergeWorkspaceStatesBeforeReset = mergeWorkspaceStates;
+mergeWorkspaceStates = function (remoteState, localState) {
+	const resetRevision = Number(remoteState?._dataResetRevision) || 0;
+	const markerKey = `${accountStorageKey}:data-reset-revision`;
+	const knownResetRevision = Number(localStorage.getItem(markerKey)) || 0;
+	if (resetRevision > knownResetRevision) {
+		localStorage.setItem(markerKey, String(resetRevision));
+		const cleanRemoteState = { ...remoteState };
+		delete cleanRemoteState._dataResetRevision;
+		return stateWithBaseRevision(cleanRemoteState, lastRemoteRevision);
+	}
+	return mergeWorkspaceStatesBeforeReset(remoteState, localState);
+};
+function syncStateToServer(snapshot) { const baseRevision = Number(snapshot._baseRevision ?? lastRemoteRevision) || 0; serverSyncQueue = serverSyncQueue.catch(() => {}).then(async () => { let lastError; for (let attempt = 0; attempt < 3; attempt += 1) { try { const response = await fetch('/api/state', { method: 'POST', keepalive: true, headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sessionStorage.getItem('ledgerly-token') || ''}` }, body: JSON.stringify({ state: { ...snapshot, _baseRevision: baseRevision } }) }); const result = await response.json().catch(() => ({})); if (!response.ok) throw new Error(result.error || 'Workspace sync failed.'); lastRemoteRevision = Math.max(lastRemoteRevision, Number(result.revision) || 0); return result; } catch (error) { lastError = error; if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 500 * (2 ** attempt))); } } throw lastError; }); return serverSyncQueue; }
 function markStateSynced(snapshot) { if (localStorage.getItem(accountStorageKey) !== JSON.stringify(snapshot)) return; localStateDirty = false; localStorage.removeItem(pendingSyncKey); }
 function saveState() { normalizeDateTimes(); const snapshot = stateSnapshot(); localStateDirty = true; localStorage.setItem(accountStorageKey, JSON.stringify(snapshot)); localStorage.setItem(pendingSyncKey, 'true'); if (!remoteStateReady) return Promise.resolve(false); const syncRequest = syncStateToServer(snapshot); syncRequest.then(() => markStateSynced(snapshot)).catch(() => {}); return syncRequest; }
 function snapshotForRole(remoteState, localSnapshot) {
@@ -176,6 +193,7 @@ function migrateReturnVat() {
 }
 migrateReturnVat();
 function formatSystemDateTime(value = new Date()) { return new Intl.DateTimeFormat(undefined, { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(value); }
+function localDateISO(value = new Date()) { return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`; }
 function syncOverviewGreeting() {
 	const pageHeading = document.querySelector('.page-heading');
 	if (!pageHeading || state.view !== 'overview') return;
@@ -299,7 +317,7 @@ document.getElementById('invoice-payment-form').addEventListener('submit', event
 		window.alert(`Enter an amount greater than zero and no more than the remaining balance of ${money(balance)}.`);
 		return;
 	}
-	state.invoicePayments.push({ id: crypto.randomUUID(), invoiceNo: invoice.no, amount, date: formatSystemDateTime(), method: document.getElementById('invoice-payment-method').value, reference: document.getElementById('payment-reference').value.trim() });
+	state.invoicePayments.push({ id: crypto.randomUUID(), invoiceNo: invoice.no, amount, date: formatSystemDateTime(), dateISO: localDateISO(), method: document.getElementById('invoice-payment-method').value, reference: document.getElementById('payment-reference').value.trim() });
 	if (state.invoicePayments.filter(payment => payment.invoiceNo === invoice.no).reduce((sum, payment) => sum + (Number(payment.amount) || 0), 0) >= Number(invoice.total) - 0.005) invoice.status = 'Paid';
 	saveState().then(() => {
 		closeInvoicePayment();
@@ -1104,6 +1122,104 @@ const ROLE_VIEWS = { admin: ['overview', 'quotations', 'invoices', 'inventory', 
 function currentRole() { return sessionStorage.getItem('ledgerly-role') || 'cashier'; }
 function canAccessView(view) { return (ROLE_VIEWS[currentRole()] || ROLE_VIEWS.cashier).includes(view); }
 function render() { if (!canAccessView(state.view)) state.view = (ROLE_VIEWS[currentRole()] || ROLE_VIEWS.cashier)[0]; const title = { overview:'Overview', quotations:'Quotations', invoices:'Invoices', inventory:'Inventory', delivery:'Delivery notes', returns:'Returns', customers:'Customers', purchases:'Purchases', expenses:'Expenses', reports:'Reports', accounts:'Chart of accounts', journal:'Journal entries', 'trial-balance':'Trial balance' }[state.view]; document.getElementById('page-title').textContent = title; document.getElementById('app-content').innerHTML = state.view === 'overview' ? renderOverview() : state.view === 'quotations' ? renderQuotations() : state.view === 'invoices' ? renderInvoices() : state.view === 'inventory' ? renderInventory() + renderInventoryHistory() : state.view === 'delivery' ? renderDeliveryNotes() : state.view === 'returns' ? renderReturns() : state.view === 'customers' ? renderCustomers() : state.view === 'purchases' ? renderPurchases() : state.view === 'expenses' ? renderExpenses() : state.view === 'reports' ? renderReports() : state.view === 'accounts' ? renderAccounts() : state.view === 'journal' ? renderJournal() : state.view === 'trial-balance' ? renderTrialBalance() : renderGeneric(state.view); resetDashboardMetrics(); bindViewActions(); syncRoleAccess(); syncOverviewGreeting(); syncCompanyHeader(); }
+function renderCashOpeningCard() {
+	if (state.view !== 'overview') return;
+	const grid = document.querySelector('#app-content .stats-grid');
+	if (!grid) return;
+	const user = sessionStorage.getItem('ledgerly-user') || '';
+	grid.insertAdjacentHTML('beforeend', `<div class="stat-card"><span class="stat-label">My opening cash</span><strong class="stat-value">${cashOpening ? money(cashOpening.amount) : 'Not recorded'}</strong><span class="stat-note">This login · ${escHtml(user)}</span><span class="stat-icon bg-mint">$</span></div>`);
+}
+const renderWorkspace = render;
+render = function () { renderWorkspace(); renderCashOpeningCard(); };
+
+function openCashOpeningDialog() {
+	if (document.getElementById('cash-opening-backdrop')) return;
+	const backdrop = document.createElement('div');
+	backdrop.id = 'cash-opening-backdrop';
+	backdrop.style.cssText = 'position:fixed;inset:0;background:#0008;z-index:10000;display:flex;align-items:center;justify-content:center;padding:20px';
+	backdrop.innerHTML = `<section role="dialog" aria-modal="true" aria-labelledby="cash-opening-title" style="background:#fff;border-radius:12px;padding:24px;width:min(440px,100%);box-shadow:0 20px 60px #0003"><div class="modal-kicker">Cash drawer</div><h2 id="cash-opening-title" style="margin:8px 0">Record opening cash</h2><p class="modal-copy">Enter the cash in your drawer at the start of this login/shift. This is tracked for you and is not posted as new sales.</p><form id="cash-opening-form"><label>Opening cash amount (SAR)<input name="amount" type="number" min="0" max="10000000" step="0.01" value="0" required style="${fieldStyle}"></label><p class="form-error" style="color:#b14f43;min-height:18px;font-size:12px"></p><button class="primary-btn full" type="submit">Start shift</button></form></section>`;
+	document.body.appendChild(backdrop);
+	const form = backdrop.querySelector('form');
+	form.addEventListener('submit', async event => {
+		event.preventDefault();
+		const button = form.querySelector('button[type="submit"]');
+		const error = form.querySelector('.form-error');
+		button.disabled = true;
+		error.textContent = '';
+		try {
+			const response = await fetch('/api/cash-opening', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sessionStorage.getItem('ledgerly-token') || ''}` },
+				body: JSON.stringify({ amount: form.elements.amount.value }),
+			});
+			const result = await response.json().catch(() => ({}));
+			if (!response.ok && response.status !== 409) throw new Error(result.error || 'Unable to record opening cash.');
+			if (!result.opening) throw new Error(result.error || 'Opening cash was not returned by the server.');
+			cashOpening = result.opening;
+			backdrop.remove();
+			render();
+		} catch (requestError) {
+			error.textContent = requestError.message;
+			button.disabled = false;
+		}
+	});
+	form.elements.amount.focus();
+}
+
+async function loadCashOpening() {
+	const response = await fetch('/api/cash-opening', { headers: { Authorization: `Bearer ${sessionStorage.getItem('ledgerly-token') || ''}` } });
+	const result = await response.json().catch(() => ({}));
+	if (!response.ok) throw new Error(result.error || 'Unable to load your opening cash.');
+	cashOpening = result.opening;
+	render();
+	if (!cashOpening) openCashOpeningDialog();
+}
+
+function openClearCompanyDataDialog() {
+	if (currentRole() !== 'admin' || !window.confirm('Delete all business data and journal entries for this company? Users, company settings, and the chart of accounts will remain. This cannot be undone.')) return;
+	const backdrop = document.createElement('div');
+	backdrop.style.cssText = 'position:fixed;inset:0;background:#0008;z-index:10001;display:flex;align-items:center;justify-content:center;padding:20px';
+	backdrop.innerHTML = `<section role="dialog" aria-modal="true" aria-labelledby="clear-data-title" style="background:#fff;border-radius:12px;padding:24px;width:min(440px,100%);box-shadow:0 20px 60px #0003"><div class="modal-kicker" style="color:#a64c43">Admin confirmation</div><h2 id="clear-data-title" style="margin:8px 0">Clear all company data</h2><p class="modal-copy">Enter your administrator password to permanently delete company transactions, inventory records, opening cash records, and journal entries.</p><form id="clear-data-form"><label>Administrator password<input name="password" type="password" autocomplete="current-password" required style="${fieldStyle}"></label><p class="form-error" style="color:#b14f43;min-height:18px;font-size:12px"></p><div style="display:flex;justify-content:flex-end;gap:8px"><button class="date-chip" type="button" data-cancel>Cancel</button><button class="primary-btn" type="submit" style="background:#a64c43">Delete all data</button></div></form></section>`;
+	document.body.appendChild(backdrop);
+	const form = backdrop.querySelector('form');
+	backdrop.querySelector('[data-cancel]').addEventListener('click', () => backdrop.remove());
+	form.addEventListener('submit', async event => {
+		event.preventDefault();
+		const button = form.querySelector('button[type="submit"]');
+		const error = form.querySelector('.form-error');
+		button.disabled = true;
+		error.textContent = '';
+		try {
+			const response = await fetch('/api/admin/clear-data', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sessionStorage.getItem('ledgerly-token') || ''}` },
+				body: JSON.stringify({ password: form.elements.password.value }),
+			});
+			const result = await response.json().catch(() => ({}));
+			if (!response.ok) throw new Error(result.error || 'Unable to clear company data.');
+			['quotations', 'invoices', 'invoicePayments', 'products', 'deliveryNotes', 'customers', 'suppliers', 'purchases', 'expenses', 'returns', 'inventoryHistory'].forEach(key => { state[key] = []; });
+			state.view = 'overview';
+			cashOpening = null;
+			lastRemoteRevision = Number(result.revision) || lastRemoteRevision;
+			localStorage.setItem(`${accountStorageKey}:data-reset-revision`, String(result.data_reset_revision || result.revision || 0));
+			localStateDirty = false;
+			localStorage.setItem(accountStorageKey, JSON.stringify(stateSnapshot()));
+			localStorage.removeItem(pendingSyncKey);
+			backdrop.remove();
+			document.getElementById('company-modal-backdrop').hidden = true;
+			render();
+			openCashOpeningDialog();
+		} catch (requestError) {
+			error.textContent = requestError.message;
+			button.disabled = false;
+		}
+	});
+	form.elements.password.focus();
+}
+document.addEventListener('click', event => {
+	if (event.target.closest('#clear-company-data')) openClearCompanyDataDialog();
+});
+
 function syncRoleAccess() {
 	const role = currentRole();
 	document.querySelectorAll('.nav-item[data-view]').forEach(item => { item.hidden = !canAccessView(item.dataset.view); });
@@ -1359,7 +1475,7 @@ document.getElementById('invoice-form').addEventListener('submit', event => {
 	const subtotal = items.reduce((sum, item) => sum + item.net, 0);
 	const vat = items.reduce((sum, item) => sum + item.vatAmount, 0);
 	const quotation = invoiceDraft?.quotation ? state.quotations.find(item => item.no === invoiceDraft.quotation) : null;
-	state.invoices.unshift({ no: document.getElementById('invoice-number').value || nextInvoiceNumber(), quotation: invoiceDraft?.quotation, customer: buyer?.name || 'Walk-in customer', buyer, invoiceType, paymentMethod, date: formatSystemDateTime(), subtotal, vatTotal: vat, total: subtotal + vat, status: paymentMethod === 'Credit' ? 'Pending' : 'Paid', items: items.map(({ productName, quantity, price, discount, unit, vatCategory, vatRate, vatAmount, total }) => ({ product: productName, quantity, unit, price, discount, vatCategory, vatRate, vatAmount, total })) });
+	state.invoices.unshift({ no: document.getElementById('invoice-number').value || nextInvoiceNumber(), quotation: invoiceDraft?.quotation, customer: buyer?.name || 'Walk-in customer', buyer, invoiceType, paymentMethod, date: formatSystemDateTime(), dateISO: localDateISO(), subtotal, vatTotal: vat, total: subtotal + vat, status: paymentMethod === 'Credit' ? 'Pending' : 'Paid', items: items.map(({ productName, quantity, price, discount, unit, vatCategory, vatRate, vatAmount, total }) => ({ product: productName, quantity, unit, price, discount, vatCategory, vatRate, vatAmount, total })) });
 	if (quotation) quotation.status = 'Converted';
 	items.forEach(item => { if (item.product) item.product.stock = Math.max(0, item.product.stock - item.quantity); });
 	saveState();
@@ -1440,7 +1556,7 @@ document.addEventListener('click', event => {
 		return { product: row.querySelector('.return-product').value.trim() || invoiceItem.product, inventoryProduct: invoiceItem.product, invoiceItemIndex: Number(row.dataset.itemIndex), quantity, price: Number(invoiceItem.price) || 0, discount: Number(invoiceItem.discount) || 0, unit: invoiceItem.unit || 'pcs', vatCategory: invoiceItem.vatCategory || 'standard', vatRate: invoiceItem.vatRate ?? 0.15 };
 	}).filter(item => item.quantity > 0);
 	if (!items.length) return;
-	state.returns.unshift({ no: `RET-${String(state.returns.length + 1).padStart(4, '0')}`, invoice: invoiceNumber, customer: invoice.customer, date: formatSystemDateTime(), items });
+	state.returns.unshift({ no: `RET-${String(state.returns.length + 1).padStart(4, '0')}`, invoice: invoiceNumber, customer: invoice.customer, date: formatSystemDateTime(), dateISO: localDateISO(), items });
 	items.forEach(returned => { const product = findInventoryProduct(returned.inventoryProduct); if (product) product.stock += returned.quantity; });
 	saveState();
 	render();
@@ -1552,6 +1668,8 @@ function syncSettingsAccess() {
 	const settingsButton = document.getElementById('settings-btn');
 	const isAdmin = currentRole() === 'admin';
 	if (settingsButton) settingsButton.hidden = !isAdmin;
+	const clearDataSettings = document.getElementById('clear-data-settings');
+	if (clearDataSettings) clearDataSettings.hidden = !isAdmin;
 	const currentUser = sessionStorage.getItem('ledgerly-user') || state.credentials.username;
 	const userName = document.getElementById('current-user-name');
 	const userRole = document.getElementById('current-user-role');
@@ -1839,7 +1957,7 @@ initializeTheme();
 syncOverviewGreeting();
 syncCompanyHeader();
 syncSettingsAccess();
-loadRemoteState();
+loadRemoteState().then(() => loadCashOpening()).catch(error => window.alert(error.message));
 
 function bindReportFilters() {
 	const movementPanel = document.querySelector('.report-movement');

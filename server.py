@@ -11,6 +11,8 @@ import sqlite3
 import sys
 import threading
 import time
+from datetime import date as calendar_date
+from datetime import datetime
 from email.message import EmailMessage
 from http.cookies import SimpleCookie
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -49,10 +51,28 @@ def connection():
     return database
 
 
+PASSWORD_ROUNDS = 600_000
+LEGACY_PASSWORD_ROUNDS = 120_000
+
+
 def password_hash(password, salt=None):
-    salt = salt or secrets.token_hex(16)
-    digest = hashlib.pbkdf2_hmac('sha256', password.encode(), salt.encode(), 120_000).hex()
+    # New salts carry a "v2:" prefix so older hashes keep verifying with their original rounds.
+    salt = salt or 'v2:' + secrets.token_hex(16)
+    rounds = PASSWORD_ROUNDS if salt.startswith('v2:') else LEGACY_PASSWORD_ROUNDS
+    digest = hashlib.pbkdf2_hmac('sha256', password.encode(), salt.encode(), rounds).hex()
     return salt, digest
+
+
+def password_problem(password):
+    if len(password) < 8:
+        return 'Password must be at least 8 characters.'
+    if len(password) > 128:
+        return 'Password must be 128 characters or fewer.'
+    if not any(c.isalpha() for c in password) or not any(c.isdigit() for c in password):
+        return 'Password must include at least one letter and one number.'
+    if password.lower() in {'password1', 'password123', '12345678a', 'qwerty123', 'admin123', 'abcd1234'}:
+        return 'That password is too common.'
+    return None
 
 
 def initialise_database():
@@ -105,12 +125,15 @@ def initialise_database():
                 company_id INTEGER PRIMARY KEY REFERENCES companies(id) ON DELETE CASCADE,
                 state_json TEXT NOT NULL,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                revision INTEGER NOT NULL DEFAULT 0
+                revision INTEGER NOT NULL DEFAULT 0,
+                data_reset_revision INTEGER NOT NULL DEFAULT 0
             )
         ''')
         state_columns = {row['name'] for row in database.execute('PRAGMA table_info(company_states)')}
         if 'revision' not in state_columns:
             database.execute('ALTER TABLE company_states ADD COLUMN revision INTEGER NOT NULL DEFAULT 0')
+        if 'data_reset_revision' not in state_columns:
+            database.execute('ALTER TABLE company_states ADD COLUMN data_reset_revision INTEGER NOT NULL DEFAULT 0')
         database.execute('''
             CREATE TABLE IF NOT EXISTS password_resets (
                 email TEXT PRIMARY KEY COLLATE NOCASE,
@@ -152,6 +175,17 @@ def initialise_database():
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
         ''')
+        database.execute('''
+            CREATE TABLE IF NOT EXISTS cash_openings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                token_hash TEXT NOT NULL UNIQUE,
+                user_id INTEGER NOT NULL REFERENCES users(id),
+                company_id INTEGER NOT NULL REFERENCES companies(id),
+                amount REAL NOT NULL CHECK (amount >= 0),
+                opened_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        database.execute('CREATE INDEX IF NOT EXISTS idx_cash_openings_company ON cash_openings (company_id, opened_at DESC)')
         account_columns = {row['name'] for row in database.execute('PRAGMA table_info(accounts)')}
         added_normal_balance = 'normal_balance' not in account_columns
         for column, definition in (
@@ -175,6 +209,10 @@ def initialise_database():
                 database.execute(f'ALTER TABLE journal_entries ADD COLUMN {column} {definition}')
         database.execute("UPDATE journal_entries SET entry_date = date(created_at) WHERE entry_date IS NULL OR entry_date = ''")
         database.execute('CREATE INDEX IF NOT EXISTS idx_journal_company_date ON journal_entries (company_id, status, entry_date)')
+        database.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_auto_journal_reference ON journal_entries (company_id, reference_type, reference) "
+            "WHERE reference_type IN ('sale', 'sale_cogs', 'sale_payment', 'sale_return', 'sale_return_cogs')"
+        )
         database.execute('CREATE INDEX IF NOT EXISTS idx_journal_lines_account_entry ON journal_lines (account_id, journal_entry_id)')
         for user in database.execute('SELECT id, username FROM users WHERE company_id IS NULL').fetchall():
             state_row = database.execute('SELECT state_json FROM user_states WHERE user_id = ?', (user['id'],)).fetchone()
@@ -334,6 +372,259 @@ def log_activity(database, company_id, username, action, detail=''):
     )
 
 
+class AutomaticJournalError(Exception):
+    pass
+
+
+AUTOMATIC_ACCOUNTS = (
+    ('1000', 'Cash', 'asset', 'debit'),
+    ('1010', 'Bank', 'asset', 'debit'),
+    ('1100', 'Accounts Receivable', 'asset', 'debit'),
+    ('1200', 'Inventory', 'asset', 'debit'),
+    ('2100', 'VAT Payable', 'liability', 'credit'),
+    ('4000', 'Sales Revenue', 'revenue', 'credit'),
+    ('5000', 'Cost of Goods Sold', 'expense', 'debit'),
+)
+
+
+def automatic_account_ids(database, company_id):
+    for code, name, account_type, normal_balance in AUTOMATIC_ACCOUNTS:
+        database.execute(
+            "INSERT OR IGNORE INTO accounts (company_id, code, name, account_type, normal_balance, is_active, description) VALUES (?, ?, ?, ?, ?, 1, 'Default account')",
+            (company_id, code, name, account_type, normal_balance),
+        )
+    accounts = database.execute(
+        'SELECT id, code, is_active FROM accounts WHERE company_id = ? AND code IN (?, ?, ?, ?, ?, ?, ?)',
+        (company_id, *(account[0] for account in AUTOMATIC_ACCOUNTS)),
+    ).fetchall()
+    account_ids = {row['code']: row['id'] for row in accounts if row['is_active']}
+    if len(account_ids) != len(AUTOMATIC_ACCOUNTS):
+        raise AutomaticJournalError('An account needed for automatic sales posting is missing or inactive. Ask an administrator to enable the default accounts.')
+    return account_ids
+
+
+def workspace_date(value):
+    if not isinstance(value, str):
+        return None
+    try:
+        return calendar_date.fromisoformat(value[:10]).isoformat()
+    except ValueError:
+        pass
+    for date_format in ('%a, %b %d, %Y, %I:%M %p', '%a, %b %d, %Y, %H:%M', '%b %d, %Y'):
+        try:
+            return datetime.strptime(value, date_format).date().isoformat()
+        except ValueError:
+            continue
+    return None
+
+
+def finite_amount(value):
+    try:
+        amount = float(value or 0)
+    except (TypeError, ValueError):
+        return None
+    return round(amount, 2) if math.isfinite(amount) and amount >= 0 else None
+
+
+def post_automatic_journal(database, company_id, user_id, account_ids, reference_type, reference, memo, entry_date, lines):
+    if database.execute(
+        'SELECT 1 FROM journal_entries WHERE company_id = ? AND reference_type = ? AND reference = ?',
+        (company_id, reference_type, reference),
+    ).fetchone():
+        return
+    checked_lines = [(account_ids[code], round(debit, 2), round(credit, 2)) for code, debit, credit in lines if debit > 0.005 or credit > 0.005]
+    debit_total = round(sum(line[1] for line in checked_lines), 2)
+    credit_total = round(sum(line[2] for line in checked_lines), 2)
+    if len(checked_lines) < 2 or debit_total <= 0 or abs(debit_total - credit_total) > 0.005:
+        raise AutomaticJournalError(f'Could not create a balanced journal entry for {reference}.')
+    cursor = database.execute(
+        "INSERT OR IGNORE INTO journal_entries (company_id, reference_type, memo, created_by, entry_date, reference, status, posted_by, posted_at) VALUES (?, ?, ?, ?, ?, ?, 'posted', ?, CURRENT_TIMESTAMP)",
+        (company_id, reference_type, memo[:500], user_id, entry_date, reference[:80], user_id),
+    )
+    if cursor.rowcount == 0:
+        return
+    database.executemany(
+        'INSERT INTO journal_lines (journal_entry_id, account_id, debit, credit) VALUES (?, ?, ?, ?)',
+        [(cursor.lastrowid, *line) for line in checked_lines],
+    )
+
+
+def purchase_unit_costs(workspace, sale_date):
+    costs = {}
+    for purchase in workspace.get('purchases') or []:
+        if not isinstance(purchase, dict):
+            continue
+        purchase_date = workspace_date(purchase.get('date'))
+        if not purchase_date or purchase_date > sale_date:
+            continue
+        for item in purchase.get('items') or []:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get('product') or item.get('name') or '').strip().casefold()
+            quantity = finite_amount(item.get('quantity'))
+            price = finite_amount(item.get('price'))
+            if name and quantity and price and price > 0:
+                total_quantity, total_cost = costs.get(name, (0.0, 0.0))
+                costs[name] = (total_quantity + quantity, total_cost + quantity * price)
+    return {name: total_cost / quantity for name, (quantity, total_cost) in costs.items() if quantity > 0}
+
+
+def post_new_workspace_transactions(database, company_id, user, previous, current):
+    old_invoices = {str(item.get('no')): item for item in previous.get('invoices') or [] if isinstance(item, dict)}
+    old_returns = {str(item.get('no')): item for item in previous.get('returns') or [] if isinstance(item, dict)}
+    old_payment_ids = {str(item.get('id')) for item in previous.get('invoicePayments') or [] if isinstance(item, dict) and item.get('id')}
+    current_invoices = {str(item.get('no')): item for item in current.get('invoices') or [] if isinstance(item, dict) and item.get('no')}
+    current_returns = {str(item.get('no')): item for item in current.get('returns') or [] if isinstance(item, dict) and item.get('no')}
+    current_payments = [item for item in current.get('invoicePayments') or [] if isinstance(item, dict) and item.get('id')]
+    if not any(reference not in old_invoices for reference in current_invoices) and not any(reference not in old_returns for reference in current_returns) and not any(str(payment.get('id')) not in old_payment_ids for payment in current_payments):
+        return
+    account_ids = automatic_account_ids(database, company_id)
+
+    def amount(value, message):
+        result = finite_amount(value)
+        if result is None:
+            raise AutomaticJournalError(message)
+        return result
+
+    for invoice_number, invoice in current_invoices.items():
+        if invoice_number in old_invoices:
+            continue
+        total = amount(invoice.get('total'), f'Invoice {invoice_number} has an invalid total and could not be posted.')
+        subtotal = amount(invoice.get('subtotal', total), f'Invoice {invoice_number} has an invalid subtotal and could not be posted.')
+        vat = amount(invoice.get('vatTotal', max(0, total - subtotal)), f'Invoice {invoice_number} has invalid VAT and could not be posted.')
+        if total <= 0 or abs(subtotal + vat - total) > 0.05:
+            raise AutomaticJournalError(f'Invoice {invoice_number} totals do not balance; correct it before saving.')
+        entry_date = workspace_date(invoice.get('dateISO') or invoice.get('date'))
+        if not entry_date:
+            raise AutomaticJournalError(f'Invoice {invoice_number} has an invalid date and could not be posted.')
+        payment_method = str(invoice.get('paymentMethod') or 'Cash').strip().casefold()
+        payment_records = [payment for payment in current_payments if str(payment.get('invoiceNo')) == invoice_number]
+        paid_at_sale = str(invoice.get('status') or '').casefold() == 'paid' and not payment_records
+        debit_account = '1010' if payment_method in ('online', 'bank transfer', 'card') else '1000'
+        if not paid_at_sale:
+            debit_account = '1100'
+        lines = [(debit_account, total, 0), ('4000', 0, subtotal)]
+        if vat:
+            lines.append(('2100', 0, vat))
+        post_automatic_journal(database, company_id, user['id'], account_ids, 'sale', invoice_number, f'Sale {invoice_number} · {invoice.get("customer", "")}', entry_date, lines)
+
+        costs = purchase_unit_costs(previous, entry_date)
+        cost_total = 0.0
+        for item in invoice.get('items') or []:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get('product') or item.get('name') or '').strip().casefold()
+            quantity = amount(item.get('quantity'), f'Invoice {invoice_number} has an invalid item quantity.')
+            if name in costs and quantity:
+                cost_total += quantity * costs[name]
+        cost_total = round(cost_total, 2)
+        if cost_total > 0:
+            post_automatic_journal(
+                database, company_id, user['id'], account_ids, 'sale_cogs', invoice_number,
+                f'Cost of goods sold {invoice_number}', entry_date,
+                [('5000', cost_total, 0), ('1200', 0, cost_total)],
+            )
+
+    invoices_by_number = {**old_invoices, **current_invoices}
+    payments_by_invoice = {}
+    for payment in current_payments:
+        invoice_number = str(payment.get('invoiceNo') or '')
+        if not invoice_number or str(payment.get('id')) in old_payment_ids:
+            continue
+        invoice = invoices_by_number.get(invoice_number)
+        if not invoice:
+            raise AutomaticJournalError(f'Payment {payment.get("id")} refers to an invoice that was not found.')
+        payment_amount = amount(payment.get('amount'), 'An invoice payment has an invalid amount.')
+        if payment_amount <= 0:
+            raise AutomaticJournalError('An invoice payment must be greater than zero.')
+        entry_date = workspace_date(payment.get('dateISO') or payment.get('date'))
+        if not entry_date:
+            raise AutomaticJournalError('An invoice payment has an invalid date.')
+        method = str(payment.get('method') or 'Cash').strip().casefold()
+        debit_account = '1010' if method in ('online', 'bank transfer', 'card') else '1000'
+        payment_reference = str(payment.get('id'))
+        post_automatic_journal(
+            database, company_id, user['id'], account_ids, 'sale_payment', payment_reference,
+            f'Payment for {invoice_number}', entry_date,
+            [(debit_account, payment_amount, 0), ('1100', 0, payment_amount)],
+        )
+        payments_by_invoice[invoice_number] = payments_by_invoice.get(invoice_number, 0.0) + payment_amount
+
+    for return_number, returned in current_returns.items():
+        if return_number in old_returns:
+            continue
+        invoice_number = str(returned.get('invoice') or '')
+        invoice = invoices_by_number.get(invoice_number)
+        if not invoice:
+            raise AutomaticJournalError(f'Return {return_number} refers to an invoice that was not found.')
+        entry_date = workspace_date(returned.get('dateISO') or returned.get('date'))
+        if not entry_date:
+            raise AutomaticJournalError(f'Return {return_number} has an invalid date and could not be posted.')
+        net = finite_amount(returned.get('refundSubtotal'))
+        vat = finite_amount(returned.get('refundVat'))
+        if net is None:
+            net = sum(
+                max(0, (finite_amount(item.get('price')) or 0) - (finite_amount(item.get('discount')) or 0))
+                * (finite_amount(item.get('quantity')) or 0)
+                for item in returned.get('items') or [] if isinstance(item, dict)
+            )
+        if vat is None:
+            vat = sum(
+                (finite_amount(item.get('vatAmount')) if finite_amount(item.get('vatAmount')) is not None else
+                 max(0, (finite_amount(item.get('price')) or 0) - (finite_amount(item.get('discount')) or 0))
+                 * (finite_amount(item.get('quantity')) or 0) * (finite_amount(item.get('vatRate')) or 0))
+                for item in returned.get('items') or [] if isinstance(item, dict)
+            )
+        refund_total = finite_amount(returned.get('refundTotal'))
+        if refund_total is None:
+            refund_total = round(net + vat, 2)
+        if refund_total <= 0 or abs(net + vat - refund_total) > 0.05:
+            raise AutomaticJournalError(f'Return {return_number} totals do not balance; correct it before saving.')
+
+        prior_invoice = old_invoices.get(invoice_number, invoice)
+        prior_total = finite_amount(prior_invoice.get('total')) or 0
+        paid = sum(
+            finite_amount(payment.get('amount')) or 0
+            for payment in previous.get('invoicePayments') or []
+            if isinstance(payment, dict) and str(payment.get('invoiceNo')) == invoice_number
+        )
+        if str(prior_invoice.get('status') or '').casefold() == 'paid':
+            paid = max(paid, prior_total)
+        paid += payments_by_invoice.get(invoice_number, 0.0)
+        receivable_reduction = min(refund_total, max(0, prior_total - paid))
+        cash_refund = round(refund_total - receivable_reduction, 2)
+        lines = [('4000', net, 0)]
+        if vat:
+            lines.append(('2100', vat, 0))
+        if receivable_reduction:
+            lines.append(('1100', 0, receivable_reduction))
+        if cash_refund:
+            method = str(prior_invoice.get('paymentMethod') or 'Cash').strip().casefold()
+            cash_account = '1010' if method in ('online', 'bank transfer', 'card') else '1000'
+            lines.append((cash_account, 0, cash_refund))
+        post_automatic_journal(
+            database, company_id, user['id'], account_ids, 'sale_return', return_number,
+            f'Sales return {return_number} · {invoice_number}', entry_date, lines,
+        )
+
+        costs = purchase_unit_costs(previous, workspace_date(invoice.get('dateISO') or invoice.get('date')) or entry_date)
+        cost_total = 0.0
+        for item in returned.get('items') or []:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get('inventoryProduct') or item.get('product') or '').strip().casefold()
+            quantity = finite_amount(item.get('quantity')) or 0
+            if name in costs:
+                cost_total += quantity * costs[name]
+        cost_total = round(cost_total, 2)
+        if cost_total > 0:
+            post_automatic_journal(
+                database, company_id, user['id'], account_ids, 'sale_return_cogs', return_number,
+                f'Return inventory cost {return_number}', entry_date,
+                [('1200', cost_total, 0), ('5000', 0, cost_total)],
+            )
+
+
 def describe_state_changes(previous, current):
     changes = []
     for key, (id_field, label) in ACTIVITY_COLLECTIONS.items():
@@ -409,6 +700,7 @@ def restricted_workspace(state, role, existing_state=None):
                 'invoiceNo': invoice_number,
                 'amount': amount,
                 'date': str(payment.get('date', '')),
+                'dateISO': str(payment.get('dateISO', ''))[:40],
                 'method': str(payment.get('method', 'Cash')),
                 'reference': str(payment.get('reference', '')),
             }
@@ -518,6 +810,10 @@ class LedgerlyHandler(SimpleHTTPRequestHandler):
         return json.loads(self.rfile.read(length) or '{}')
 
     def authenticated_user(self, database):
+        session = self.authenticated_session(database)
+        return session[0] if session else None
+
+    def authenticated_session(self, database):
         authorization = self.headers.get('Authorization', '')
         token = authorization[7:] if authorization.startswith('Bearer ') else ''
         tokens = [token] if token not in ('', 'undefined', 'null') else []
@@ -527,13 +823,14 @@ class LedgerlyHandler(SimpleHTTPRequestHandler):
         if session_cookie and session_cookie.value not in tokens:
             tokens.append(session_cookie.value)
         for session_token in tokens:
+            token_hash = session_token_hash(session_token)
             user = database.execute('''
                 SELECT users.* FROM auth_sessions
                 JOIN users ON users.id = auth_sessions.user_id
                 WHERE auth_sessions.token_hash = ? AND auth_sessions.expires_at > ?
-            ''', (session_token_hash(session_token), int(time.time()))).fetchone()
+            ''', (token_hash, int(time.time()))).fetchone()
             if user:
-                return user
+                return user, token_hash
         return None
 
     @staticmethod
@@ -542,10 +839,79 @@ class LedgerlyHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
-        if path not in ('/api/register', '/api/verify-registration', '/api/resend-registration-code', '/api/forgot-password', '/api/reset-password', '/api/login', '/api/logout', '/api/update-user', '/api/update-user-role', '/api/state', '/api/accounts', '/api/journal-entries') and not re.fullmatch(r'/api/journal-entries/\d+/post', path):
+        if path not in ('/api/register', '/api/verify-registration', '/api/resend-registration-code', '/api/forgot-password', '/api/reset-password', '/api/login', '/api/logout', '/api/update-user', '/api/update-user-role', '/api/state', '/api/accounts', '/api/journal-entries', '/api/cash-opening', '/api/admin/clear-data') and not re.fullmatch(r'/api/journal-entries/\d+/post', path):
             return super().do_POST()
         try:
             payload = self.read_json()
+            if path in ('/api/cash-opening', '/api/admin/clear-data'):
+                with connection() as database:
+                    session = self.authenticated_session(database)
+                    if not session:
+                        return self.send_json(401, {'error': 'Please sign in again.'})
+                    user, token_hash = session
+                    if path == '/api/cash-opening':
+                        amount = finite_amount(payload.get('amount'))
+                        if amount is None or amount > 10000000:
+                            return self.send_json(400, {'error': 'Enter an opening cash amount between 0 and 10,000,000.'})
+                        database.execute(
+                            'INSERT OR IGNORE INTO cash_openings (token_hash, user_id, company_id, amount) VALUES (?, ?, ?, ?)',
+                            (token_hash, user['id'], user['company_id'], amount),
+                        )
+                        opening = database.execute('SELECT amount, opened_at FROM cash_openings WHERE token_hash = ?', (token_hash,)).fetchone()
+                        if not database.execute('SELECT changes()').fetchone()[0]:
+                            return self.send_json(409, {'error': 'Opening cash was already recorded for this login.', 'opening': dict(opening)})
+                        log_activity(database, user['company_id'], user['username'], 'Opening cash recorded', f'{amount:.2f} · current login')
+                        return self.send_json(201, {'opening': dict(opening)})
+
+                    if user['role'] != 'admin':
+                        return self.send_json(403, {'error': 'Only an administrator can clear company data.'})
+                    password = str(payload.get('password', ''))
+                    if not password or len(password) > 128:
+                        return self.send_json(403, {'error': 'The administrator password is incorrect.'})
+                    _, password_digest = password_hash(password, user['password_salt'])
+                    if not secrets.compare_digest(password_digest, user['password_hash']):
+                        return self.send_json(403, {'error': 'The administrator password is incorrect.'})
+
+                    state_row = database.execute('SELECT state_json, revision FROM company_states WHERE company_id = ?', (user['company_id'],)).fetchone()
+                    try:
+                        saved_state = json.loads(state_row['state_json']) if state_row else {}
+                    except json.JSONDecodeError:
+                        return self.send_json(500, {'error': 'Stored workspace data is invalid; no data was cleared.'})
+                    reset_state = dict(saved_state) if isinstance(saved_state, dict) else {}
+                    for key in ('quotations', 'invoices', 'invoicePayments', 'products', 'deliveryNotes', 'customers', 'suppliers', 'purchases', 'expenses', 'returns', 'inventoryHistory'):
+                        reset_state[key] = []
+
+                    database.execute('DELETE FROM journal_lines WHERE journal_entry_id IN (SELECT id FROM journal_entries WHERE company_id = ?)', (user['company_id'],))
+                    database.execute('DELETE FROM journal_entries WHERE company_id = ?', (user['company_id'],))
+                    database.execute('DELETE FROM cash_openings WHERE company_id = ?', (user['company_id'],))
+                    database.execute('DELETE FROM sale_items WHERE sale_id IN (SELECT id FROM sales WHERE company_id = ?)', (user['company_id'],))
+                    database.execute('DELETE FROM purchase_items WHERE purchase_id IN (SELECT id FROM purchases WHERE company_id = ?)', (user['company_id'],))
+                    database.execute('DELETE FROM stock_movements WHERE product_id IN (SELECT id FROM products WHERE company_id = ?)', (user['company_id'],))
+                    database.execute('DELETE FROM stock_balances WHERE product_id IN (SELECT id FROM products WHERE company_id = ?)', (user['company_id'],))
+                    database.execute('DELETE FROM sales WHERE company_id = ?', (user['company_id'],))
+                    database.execute('DELETE FROM purchases WHERE company_id = ?', (user['company_id'],))
+                    database.execute('DELETE FROM expenses WHERE company_id = ?', (user['company_id'],))
+                    database.execute('DELETE FROM vat_transactions WHERE company_id = ?', (user['company_id'],))
+                    database.execute('DELETE FROM products WHERE company_id = ?', (user['company_id'],))
+                    database.execute('DELETE FROM customers WHERE company_id = ?', (user['company_id'],))
+                    database.execute('DELETE FROM suppliers WHERE company_id = ?', (user['company_id'],))
+                    database.execute('DELETE FROM categories WHERE company_id = ?', (user['company_id'],))
+                    database.execute('DELETE FROM warehouses WHERE branch_id IN (SELECT id FROM branches WHERE company_id = ?)', (user['company_id'],))
+                    database.execute('DELETE FROM branches WHERE company_id = ?', (user['company_id'],))
+                    database.execute('DELETE FROM user_states WHERE user_id IN (SELECT id FROM users WHERE company_id = ?)', (user['company_id'],))
+                    database.execute(
+                        'DELETE FROM auth_sessions WHERE user_id IN (SELECT id FROM users WHERE company_id = ?) AND token_hash != ?',
+                        (user['company_id'], token_hash),
+                    )
+                    next_revision = (state_row['revision'] if state_row else 0) + 1
+                    database.execute(
+                        'INSERT INTO company_states (company_id, state_json, updated_at, revision, data_reset_revision) VALUES (?, ?, CURRENT_TIMESTAMP, ?, ?) '
+                        'ON CONFLICT(company_id) DO UPDATE SET state_json = excluded.state_json, updated_at = CURRENT_TIMESTAMP, revision = excluded.revision, data_reset_revision = excluded.data_reset_revision',
+                        (user['company_id'], json.dumps(reset_state), next_revision, next_revision),
+                    )
+                    log_activity(database, user['company_id'], user['username'], 'Company data cleared', 'Business records and journal entries deleted; users, company settings, and chart of accounts retained.')
+                    return self.send_json(200, {'cleared': True, 'revision': next_revision, 'data_reset_revision': next_revision})
+
             if path in ('/api/accounts', '/api/journal-entries') or re.fullmatch(r'/api/journal-entries/\d+/post', path):
                 with connection() as database:
                     user = self.authenticated_user(database)
@@ -714,8 +1080,8 @@ class LedgerlyHandler(SimpleHTTPRequestHandler):
                 code = str(payload.get('code', '')).strip()
                 if not username or not code:
                     return self.send_json(400, {'error': 'Email and reset code are required.'})
-                if len(password) < 6:
-                    return self.send_json(400, {'error': 'Password must be at least 6 characters.'})
+                if password_problem(password):
+                    return self.send_json(400, {'error': password_problem(password)})
                 with connection() as database:
                     pending = database.execute('SELECT * FROM password_resets WHERE email = ?', (username,)).fetchone()
                     if not pending or pending['expires_at'] < int(time.time()) or pending['attempts'] >= 5:
@@ -742,12 +1108,27 @@ class LedgerlyHandler(SimpleHTTPRequestHandler):
                     user = self.authenticated_user(database)
                     if not user:
                         return self.send_json(401, {'error': 'Please sign in again.'})
-                    previous = database.execute('SELECT state_json FROM company_states WHERE company_id = ?', (user['company_id'],)).fetchone()
+                    previous = database.execute('SELECT state_json, revision, data_reset_revision FROM company_states WHERE company_id = ?', (user['company_id'],)).fetchone()
+                    try:
+                        base_revision = int(state.get('_baseRevision', 0))
+                    except (TypeError, ValueError):
+                        base_revision = 0
+                    if previous and previous['data_reset_revision'] and base_revision < previous['data_reset_revision']:
+                        return self.send_json(409, {'error': 'Company data was cleared in another session. Reload the workspace before saving.'})
                     try:
                         previous_state = json.loads(previous['state_json']) if previous else {}
                     except json.JSONDecodeError:
                         previous_state = {}
                     saved_state = restricted_workspace(state, user['role'], previous_state)
+                    saved_state.pop('_baseRevision', None)
+                    database.execute('SAVEPOINT automatic_sales_journals')
+                    try:
+                        post_new_workspace_transactions(database, user['company_id'], user, previous_state, saved_state)
+                    except AutomaticJournalError as error:
+                        database.execute('ROLLBACK TO automatic_sales_journals')
+                        database.execute('RELEASE automatic_sales_journals')
+                        return self.send_json(409, {'error': str(error)})
+                    database.execute('RELEASE automatic_sales_journals')
                     database.execute(
                         'INSERT INTO company_states (company_id, state_json, updated_at, revision) VALUES (?, ?, CURRENT_TIMESTAMP, 1) '
                         'ON CONFLICT(company_id) DO UPDATE SET state_json = excluded.state_json, updated_at = CURRENT_TIMESTAMP, revision = company_states.revision + 1',
@@ -793,8 +1174,8 @@ class LedgerlyHandler(SimpleHTTPRequestHandler):
                 return self.send_json(400, {'error': 'Username is required.'})
             if path != '/api/update-user' and not password:
                 return self.send_json(400, {'error': 'Username and password are required.'})
-            if password and len(password) < 6:
-                return self.send_json(400, {'error': 'Password must be at least 6 characters.'})
+            if password and password_problem(password):
+                return self.send_json(400, {'error': password_problem(password)})
             login_result = None
             login_cookie = None
             with connection() as database:
@@ -868,6 +1249,9 @@ class LedgerlyHandler(SimpleHTTPRequestHandler):
                     record_login_failure(database, username, client_ip)
                     return self.send_json(401, {'error': 'Invalid username or password.'})
                 clear_login_failures(database, username)
+                if not user['password_salt'].startswith('v2:'):
+                    new_salt, new_digest = password_hash(password)
+                    database.execute('UPDATE users SET password_hash = ?, password_salt = ? WHERE id = ?', (new_digest, new_salt, user['id']))
                 login_result = {'token': create_session(database, user), 'user': public_user(user)}
                 log_activity(database, user['company_id'], user['username'], 'Signed in')
                 secure = '; Secure' if self.headers.get('X-Forwarded-Proto') == 'https' else ''
@@ -878,6 +1262,17 @@ class LedgerlyHandler(SimpleHTTPRequestHandler):
 
     def do_GET(self):
         request = urlparse(self.path)
+        if request.path == '/api/cash-opening':
+            with connection() as database:
+                session = self.authenticated_session(database)
+                if not session:
+                    return self.send_json(401, {'error': 'Please sign in again.'})
+                user, token_hash = session
+                opening = database.execute(
+                    'SELECT amount, opened_at FROM cash_openings WHERE token_hash = ? AND user_id = ? AND company_id = ?',
+                    (token_hash, user['id'], user['company_id']),
+                ).fetchone()
+                return self.send_json(200, {'opening': dict(opening) if opening else None})
         if request.path in ('/api/accounts', '/api/journal-entries', '/api/reports/trial-balance'):
             with connection() as database:
                 user = self.authenticated_user(database)
@@ -888,6 +1283,7 @@ class LedgerlyHandler(SimpleHTTPRequestHandler):
                 if request.path == '/api/accounts':
                     default_accounts = (
                         ('1000', 'Cash', 'asset', 'debit'),
+                        ('1010', 'Bank', 'asset', 'debit'),
                         ('1100', 'Accounts Receivable', 'asset', 'debit'),
                         ('1200', 'Inventory', 'asset', 'debit'),
                         ('2000', 'Accounts Payable', 'liability', 'credit'),
@@ -973,9 +1369,9 @@ class LedgerlyHandler(SimpleHTTPRequestHandler):
             user = self.authenticated_user(database)
             if not user:
                 return self.send_json(401, {'error': 'Please sign in again.'})
-            row = database.execute('SELECT state_json, revision FROM company_states WHERE company_id = ?', (user['company_id'],)).fetchone()
+            row = database.execute('SELECT state_json, revision, data_reset_revision FROM company_states WHERE company_id = ?', (user['company_id'],)).fetchone()
         if not row:
-            return self.send_json(200, {'state': None, 'role': user['role'], 'revision': 0})
+            return self.send_json(200, {'state': None, 'role': user['role'], 'revision': 0, 'data_reset_revision': 0})
         try:
             saved_state = json.loads(row['state_json'])
             if user['role'] == 'cashier':
@@ -984,7 +1380,13 @@ class LedgerlyHandler(SimpleHTTPRequestHandler):
             elif user['role'] == 'storekeeper':
                 fields = ('company', 'products', 'inventoryHistory')
                 saved_state = {key: saved_state[key] for key in fields if key in saved_state}
-            return self.send_json(200, {'state': saved_state, 'role': user['role'], 'revision': row['revision']})
+            if row['data_reset_revision']:
+                for key in ('quotations', 'invoices', 'invoicePayments', 'products', 'deliveryNotes', 'customers', 'suppliers', 'purchases', 'expenses', 'returns', 'inventoryHistory'):
+                    saved_state.setdefault(key, [])
+                if user['role'] != 'admin':
+                    saved_state['users'] = []
+            saved_state['_dataResetRevision'] = row['data_reset_revision']
+            return self.send_json(200, {'state': saved_state, 'role': user['role'], 'revision': row['revision'], 'data_reset_revision': row['data_reset_revision']})
         except json.JSONDecodeError:
             return self.send_json(500, {'error': 'Stored workspace state is invalid.'})
 

@@ -6,9 +6,18 @@
 		'Accounting': 'المحاسبة', 'Chart of accounts': 'دليل الحسابات', 'Journal entries': 'قيود اليومية', 'Trial balance': 'ميزان المراجعة',
 		'Need a hand?': 'تحتاج مساعدة؟', 'Explore the quick guide': 'تصفح الدليل السريع', 'Settings': 'الإعدادات', 'Administrator': 'مدير',
 		'Company profile': 'ملف الشركة', 'Open company profile': 'فتح ملف الشركة', 'Primary navigation': 'التنقل الرئيسي', 'Search': 'بحث', 'Notifications': 'الإشعارات',
+		'Danger zone': 'منطقة خطرة', 'Clear all company data': 'مسح جميع بيانات الشركة', 'Admin confirmation': 'تأكيد المدير',
+		'Delete all data': 'حذف جميع البيانات', 'Administrator password': 'كلمة مرور المدير',
+		'Cancel': 'إلغاء', 'Clear this company’s business records and journal entries. Users, company settings, and the chart of accounts are retained. The action cannot be undone.': 'سيتم مسح سجلات الشركة وقيود اليومية. ستبقى حسابات المستخدمين وإعدادات الشركة ودليل الحسابات. لا يمكن التراجع عن هذا الإجراء.',
+		'Delete all business data and journal entries for this company? Users, company settings, and the chart of accounts will remain. This cannot be undone.': 'هل تريد حذف جميع بيانات الأعمال وقيود اليومية لهذه الشركة؟ ستبقى حسابات المستخدمين وإعدادات الشركة ودليل الحسابات. لا يمكن التراجع عن ذلك.',
+		'Enter your administrator password to permanently delete company transactions, inventory records, opening cash records, and journal entries.': 'أدخل كلمة مرور المدير لحذف معاملات الشركة وسجلات المخزون والنقدية الافتتاحية وقيود اليومية نهائيا.',
 		'＋ New invoice': '＋ فاتورة جديدة', 'Create company profile': 'إنشاء ملف الشركة', 'Cashier': 'أمين الصندوق', 'Storekeeper': 'أمين المخزن', 'Admin': 'مدير', 'Company owner': 'مالك الشركة',
 		// Overview
 		'Net sales': 'صافي المبيعات', 'Outstanding': 'المستحق', 'Items in stock': 'الأصناف في المخزون', 'Returns this month': 'مرتجعات هذا الشهر',
+		'My opening cash': 'رصيد النقدية الافتتاحي الخاص بي', 'Not recorded': 'غير مسجل', 'Record opening cash': 'تسجيل النقدية الافتتاحية',
+		'Opening cash amount (SAR)': 'مبلغ النقدية الافتتاحي (ر.س)', 'Start shift': 'بدء الوردية', 'Cash drawer': 'درج النقدية',
+		'Enter the cash in your drawer at the start of this login/shift. This is tracked for you and is not posted as new sales.': 'أدخل النقد الموجود في درجك عند بدء تسجيل الدخول أو الوردية. يتم تتبعه لك ولا يسجل كمبيعات جديدة.',
+		'This login ·': 'تسجيل الدخول هذا ·',
 		'Recent invoices': 'أحدث الفواتير', 'View all →': 'عرض الكل ←', 'Invoice': 'الفاتورة', 'Customer': 'العميل', 'Status': 'الحالة', 'Total': 'الإجمالي',
 		'Activity': 'النشاط', 'Today': 'اليوم', 'Adjust stock': 'تعديل المخزون', 'Receive or move items': 'استلام أو نقل الأصناف', 'Delivery note': 'إشعار تسليم',
 		'Prepare an order': 'تجهيز طلب', 'Process return': 'معالجة مرتجع', 'Restock an item': 'إعادة تخزين صنف',
@@ -115,6 +124,7 @@
 	};
 	const RULES = [
 		[/^Hello, (.+)$/, 'مرحبا، $1'], [/^(\d+) paid invoices?$/, '$1 فاتورة مدفوعة'], [/^(\d+) pending invoices?$/, '$1 فاتورة معلقة'],
+		[/^This login · (.+)$/, 'تسجيل الدخول هذا · $1'],
 		[/^⌕\s+Search invoices$/, '⌕ بحث في الفواتير'], [/^(All invoices|Quotation history|Created delivery notes|Customers) \((\d+)\)$/, (m, name, count) => `${AR[name] || ({ 'Quotation history': 'سجل عروض الأسعار', 'Created delivery notes': 'إشعارات التسليم المنشأة' })[name]} (${count})`],
 		[/^Purchase history \((\d+)\)$/, 'سجل المشتريات ($1)'], [/^Suppliers \((\d+)\)$/, 'الموردون ($1)'], [/^(\d+) purchases$/, '$1 مشتريات'], [/^Return history \((\d+)\)$/, 'سجل المرتجعات ($1)'], [/^Inventory history \((\d+)\)$/, 'سجل المخزون ($1)'],
 		[/^(\d+) invoices?$/, '$1 فاتورة'], [/^(\d+) return records$/, '$1 سجل مرتجع'], [/^(\d+) returns?$/, '$1 مرتجع'],
