@@ -76,6 +76,23 @@
         <p id="roommate-error" class="error-text" hidden></p>
       </section>
 
+      <section id="user-management-card" class="card wide" hidden>
+        <h2>Create a user account</h2>
+        <form id="user-form" class="stacked-form">
+          <label>Household member
+            <select id="user-roommate" required></select>
+          </label>
+          <label>Username
+            <input id="user-username" type="text" autocomplete="off" placeholder="Choose a username" required maxlength="40" />
+          </label>
+          <label>Temporary password
+            <input id="user-password" type="password" autocomplete="new-password" placeholder="At least 8 characters" required minlength="8" maxlength="128" />
+          </label>
+          <button class="primary-btn" type="submit">Create user</button>
+          <p id="user-error" class="error-text" hidden></p>
+        </form>
+      </section>
+
       <section class="card wide">
         <h2>Balances</h2>
         <div class="table-wrap">

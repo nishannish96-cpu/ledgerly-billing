@@ -32,8 +32,9 @@ button { cursor: pointer; border: 0; }
 
 .inline-form { display: flex; gap: 10px; margin-bottom: 14px; }
 .inline-form input { flex: 1; }
+button:disabled, select:disabled { cursor: not-allowed; opacity: 0.6; }
 
-input[type="text"], input[type="number"], select {
+input[type="text"], input[type="number"], input[type="password"], select {
   width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: #fff; color: var(--ink);
 }
 input:focus, select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(91, 75, 218, 0.12); }

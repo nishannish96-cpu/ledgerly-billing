@@ -313,6 +313,30 @@ class RoommateHandler(SimpleHTTPRequestHandler):
                     database.execute('DELETE FROM settlement_payments')
                 return self.send_json(200, {'cleared': {'expenses': expenses, 'settlements': settlements}})
 
+            if path == '/api/admin/users':
+                if not session['is_admin']:
+                    return self.send_json(403, {'error': 'Only the house admin can create user accounts.'})
+                username = normalise_username(payload.get('username'))
+                password = payload.get('password')
+                roommate_name = normalise_name(payload.get('roommate_name'))
+                if not NAME_PATTERN.fullmatch(username):
+                    return self.send_json(400, {'error': 'Enter a username using letters, numbers, spaces, - or _ (max 40 characters).'})
+                if not isinstance(password, str) or not 8 <= len(password) <= 128:
+                    return self.send_json(400, {'error': 'Password must be between 8 and 128 characters.'})
+                with connection() as database:
+                    roommate = database.execute('SELECT id FROM roommates WHERE name = ?', (roommate_name,)).fetchone()
+                    if not roommate:
+                        return self.send_json(404, {'error': 'Select an existing household member.'})
+                    salt, digest = password_hash(password)
+                    created = database.execute(
+                        'INSERT INTO users (username, password_hash, password_salt, roommate_id) VALUES (?, ?, ?, ?) '
+                        'ON CONFLICT(username) DO NOTHING',
+                        (username, digest, salt, roommate['id']),
+                    )
+                    if not created.rowcount:
+                        return self.send_json(409, {'error': 'That username is already in use.'})
+                return self.send_json(201, {'created': True, 'username': username})
+
             if path == '/api/roommates':
                 if not session['is_admin']:
                     return self.send_json(403, {'error': 'Only the admin can add roommates.'})

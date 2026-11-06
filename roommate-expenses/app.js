@@ -45,8 +45,15 @@ const roommateList = document.getElementById('roommate-list');
 const roommateError = document.getElementById('roommate-error');
 const adminLockedNote = document.getElementById('admin-locked-note');
 const adminPanel = document.getElementById('admin-panel');
+const userManagementCard = document.getElementById('user-management-card');
+const userForm = document.getElementById('user-form');
+const userRoommateSelect = document.getElementById('user-roommate');
+const userUsernameInput = document.getElementById('user-username');
+const userPasswordInput = document.getElementById('user-password');
+const userError = document.getElementById('user-error');
 adminLockedNote.hidden = isAdmin();
 adminPanel.hidden = !isAdmin();
+userManagementCard.hidden = !isAdmin();
 
 const expenseForm = document.getElementById('expense-form');
 const expenseDescription = document.getElementById('expense-description');
@@ -128,6 +135,13 @@ async function loadData() {
 	lastDataSignature = signature;
 	latestBalances = data.balances;
 	renderRoommates(data.roommates);
+	if (sessionStorage.getItem('roomies-open-user-form') === '1') {
+		sessionStorage.removeItem('roomies-open-user-form');
+		if (isAdmin()) {
+			userManagementCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
+			userRoommateSelect.focus({ preventScroll: true });
+		}
+	}
 	renderInvested(data.balances);
 	renderBalances(data.balances);
 	renderSettlements(data.settlements, data.balances, data.settlement_payments);
@@ -152,6 +166,12 @@ function renderRoommates(roommates) {
 	expenseParticipants.innerHTML = roommates.map(r => `
 		<label><input type="checkbox" value="${r.name}" checked /> ${r.name}</label>
 	`).join('') || '<p class="empty-note">Add roommates first.</p>';
+
+	const selectedRoommate = userRoommateSelect.value;
+	userRoommateSelect.innerHTML = roommates.map(r => `<option value="${r.name}">${r.name}</option>`).join('');
+	if (roommates.some(r => r.name === selectedRoommate)) userRoommateSelect.value = selectedRoommate;
+	userRoommateSelect.disabled = roommates.length === 0;
+	userForm.querySelector('button[type="submit"]').disabled = roommates.length === 0;
 
 	roommateList.querySelectorAll('[data-remove-roommate]').forEach(button => {
 		button.addEventListener('click', () => removeRoommate(button.dataset.removeRoommate));
@@ -282,6 +302,27 @@ roommateForm?.addEventListener('submit', async event => {
 	} catch (error) {
 		roommateError.textContent = error.message;
 		roommateError.hidden = false;
+	}
+});
+
+userForm?.addEventListener('submit', async event => {
+	event.preventDefault();
+	userError.hidden = true;
+	try {
+		await requestJSON('/api/admin/users', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				username: userUsernameInput.value.trim(),
+				password: userPasswordInput.value,
+				roommate_name: userRoommateSelect.value,
+			}),
+		});
+		userForm.reset();
+		notify('User account created.');
+	} catch (error) {
+		userError.textContent = error.message;
+		userError.hidden = false;
 	}
 });
 

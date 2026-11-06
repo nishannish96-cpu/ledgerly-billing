@@ -38,6 +38,8 @@
           <button class="login-button" type="submit">Sign in <span aria-hidden="true">→</span></button>
           <p class="login-error" id="login-error" role="alert" hidden></p>
         </form>
+        <p class="account-switch">House admin? <button type="button" class="account-switch-button" id="admin-create-user">Sign in to create a member account</button></p>
+        <p class="demo-note" id="create-user-note" hidden></p>
         <p class="demo-note">Sign in with the username and password provided for your household.</p>
       </div>
     </section>
@@ -45,11 +47,21 @@
   <script>
     const loginForm = document.getElementById('login-form');
     const loginError = document.getElementById('login-error');
+    const createUserButton = document.getElementById('admin-create-user');
+    const createUserNote = document.getElementById('create-user-note');
 
     // visiting the login page always starts a fresh sign-in, even if another roommate's session is still stored
     sessionStorage.removeItem('roomies-token');
     sessionStorage.removeItem('roomies-username');
     sessionStorage.removeItem('roomies-is-admin');
+    sessionStorage.removeItem('roomies-open-user-form');
+
+    createUserButton.addEventListener('click', () => {
+      sessionStorage.setItem('roomies-create-user-after-login', '1');
+      createUserNote.textContent = 'Sign in with the house admin account. You can then choose a household member and create their username and password.';
+      createUserNote.hidden = false;
+      document.getElementById('login-username').focus();
+    });
 
     document.querySelectorAll('.password-toggle').forEach(toggle => {
       toggle.addEventListener('click', () => {
@@ -83,6 +95,13 @@
           username: document.getElementById('login-username').value.trim(),
           password: document.getElementById('login-password').value,
         });
+        if (sessionStorage.getItem('roomies-create-user-after-login') === '1') {
+          if (!result.user.is_admin) {
+            throw new Error('Only the house admin can create member accounts. Sign in with the admin account.');
+          }
+          sessionStorage.setItem('roomies-open-user-form', '1');
+          sessionStorage.removeItem('roomies-create-user-after-login');
+        }
         onSignedIn(result);
       } catch (error) {
         loginError.textContent = error.message;
