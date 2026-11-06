@@ -13,6 +13,7 @@ import sqlite3
 import sys
 import threading
 import time
+import zipfile
 from datetime import date as calendar_date
 from datetime import datetime, timedelta
 from email.message import EmailMessage
@@ -803,6 +804,19 @@ def post_new_workspace_transactions(database, company_id, user, previous, curren
 
 
 def describe_state_changes(previous, current):
+    sensitive_parts = ('password', 'credential', 'token', 'secret', 'hash')
+
+    def field_value(value):
+        if isinstance(value, list):
+            return f'{len(value)} item(s)'
+        if isinstance(value, dict):
+            return f'{len(value)} field(s)'
+        text = str(value if value is not None else 'empty').replace('\r', ' ').replace('\n', ' ')
+        return text[:60] + ('…' if len(text) > 60 else '')
+
+    def field_name(value):
+        return re.sub(r'(?<!^)([A-Z])', r' \1', value).lower()
+
     changes = []
     for key, (id_field, label) in ACTIVITY_COLLECTIONS.items():
         old = {str(r.get(id_field)): r for r in previous.get(key) or [] if isinstance(r, dict)}
@@ -810,22 +824,114 @@ def describe_state_changes(previous, current):
         for record_id, record in new.items():
             if record_id not in old:
                 extra = f" for {record.get('customer')}" if record.get('customer') and key != 'customers' else ''
-                changes.append((f'{label} created', f'{record_id}{extra}'))
+                if key == 'invoicePayments':
+                    detail = f'{record.get("invoiceNo", "Invoice")}: {record.get("amount", "")} · {record.get("method", "")} · receipt {record.get("reference") or record_id}'
+                else:
+                    summary_fields = ('customer', 'amount', 'total', 'status', 'reference')
+                    summary = [f'{field} {field_value(record[field])}' for field in summary_fields if record.get(field) not in (None, '')]
+                    detail = f'{record_id}{extra}' + (f' · {", ".join(summary)}' if summary else '')
+                changes.append((f'{label} created', detail))
             elif record != old[record_id]:
-                detail = record_id
-                if key == 'products':
-                    notes = [f"{field} {old[record_id].get(field)} → {record.get(field)}" for field in ('stock', 'price') if old[record_id].get(field) != record.get(field)]
-                    if notes:
-                        detail = f"{record.get('name', record_id)}: {', '.join(notes)}"
-                elif key == 'invoices' and old[record_id].get('status') != record.get('status'):
-                    detail = f"{record_id}: status {old[record_id].get('status')} → {record.get('status')}"
+                before = old[record_id]
+                changed_fields = [
+                    field for field in sorted(set(before) | set(record))
+                    if before.get(field) != record.get(field) and not any(part in field.casefold() for part in sensitive_parts)
+                ]
+                notes = [
+                    f'{field_name(field)} {field_value(before.get(field))} → {field_value(record.get(field))}'
+                    for field in changed_fields[:3]
+                ]
+                if len(changed_fields) > 3:
+                    notes.append(f'+{len(changed_fields) - 3} more field(s)')
+                detail = f'{record.get("name", record_id)}: {", ".join(notes)}' if notes else record_id
                 changes.append((f'{label} updated', detail))
         for record_id in old:
             if record_id not in new:
                 changes.append((f'{label} deleted', record_id))
     if previous.get('company') != current.get('company') and current.get('company'):
-        changes.append(('Company profile updated', ''))
+        old_company = previous.get('company') or {}
+        new_company = current.get('company') or {}
+        notes = [
+            f'{field_name(field)} {field_value(old_company.get(field))} → {field_value(new_company.get(field))}'
+            for field in sorted(set(old_company) | set(new_company))
+            if old_company.get(field) != new_company.get(field) and not any(part in field.casefold() for part in sensitive_parts)
+        ][:3]
+        changes.append(('Company profile updated', ', '.join(notes)))
     return changes
+
+
+def xlsx_xml_text(value):
+    cleaned = ''.join(
+        character for character in str(value)
+        if character in '\t\n\r' or 0x20 <= ord(character) <= 0xD7FF
+        or 0xE000 <= ord(character) <= 0xFFFD or 0x10000 <= ord(character) <= 0x10FFFF
+    )
+    return cleaned.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+
+
+def build_xlsx(rows):
+    def column_name(number):
+        result = ''
+        while number:
+            number, remainder = divmod(number - 1, 26)
+            result = chr(65 + remainder) + result
+        return result
+
+    worksheet_rows = []
+    for row_index, row in enumerate(rows, start=1):
+        cells = []
+        for column_index, value in enumerate(row, start=1):
+            if value is None:
+                continue
+            reference = f'{column_name(column_index)}{row_index}'
+            if isinstance(value, bool):
+                cells.append(f'<c r="{reference}" t="b"><v>{1 if value else 0}</v></c>')
+            elif isinstance(value, (int, float)):
+                cells.append(f'<c r="{reference}"><v>{value}</v></c>')
+            else:
+                text = xlsx_xml_text(value)
+                cells.append(f'<c r="{reference}" t="inlineStr"><is><t xml:space="preserve">{text}</t></is></c>')
+        worksheet_rows.append(f'<row r="{row_index}">{"".join(cells)}</row>')
+    worksheet = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        f'<sheetData>{"".join(worksheet_rows)}</sheetData></worksheet>'
+    )
+    workbook_parts = {
+        '[Content_Types].xml': (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+            '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+            '<Default Extension="xml" ContentType="application/xml"/>'
+            '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+            '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+            '</Types>'
+        ),
+        '_rels/.rels': (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
+            '</Relationships>'
+        ),
+        'xl/workbook.xml': (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+            'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+            '<sheets><sheet name="Ledgerly" sheetId="1" r:id="rId1"/></sheets></workbook>'
+        ),
+        'xl/_rels/workbook.xml.rels': (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'
+            '</Relationships>'
+        ),
+        'xl/worksheets/sheet1.xml': worksheet,
+    }
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, 'w', compression=zipfile.ZIP_DEFLATED) as workbook:
+        for filename, content in workbook_parts.items():
+            workbook.writestr(filename, content)
+    return output.getvalue()
 
 
 def restricted_workspace(state, role, existing_state=None):
@@ -874,6 +980,7 @@ def restricted_workspace(state, role, existing_state=None):
                 continue
             accepted = {
                 'id': payment_id,
+                'batchId': str(payment.get('batchId', ''))[:40],
                 'invoiceNo': invoice_number,
                 'amount': amount,
                 'date': str(payment.get('date', '')),
@@ -1016,9 +1123,48 @@ class LedgerlyHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
-        if path not in ('/api/register', '/api/verify-registration', '/api/resend-registration-code', '/api/forgot-password', '/api/reset-password', '/api/login', '/api/logout', '/api/update-user', '/api/update-user-role', '/api/state', '/api/accounts', '/api/journal-entries', '/api/cash-opening', '/api/admin/clear-data', '/api/bank-reconciliation', '/api/bank-reconciliation/import') and not re.fullmatch(r'/api/journal-entries/\d+/post', path):
+        if path not in ('/api/register', '/api/verify-registration', '/api/resend-registration-code', '/api/forgot-password', '/api/reset-password', '/api/login', '/api/logout', '/api/update-user', '/api/update-user-role', '/api/state', '/api/accounts', '/api/journal-entries', '/api/cash-opening', '/api/admin/clear-data', '/api/bank-reconciliation', '/api/bank-reconciliation/import', '/api/export/xlsx') and not re.fullmatch(r'/api/journal-entries/\d+/post', path):
             return super().do_POST()
         try:
+            if path == '/api/export/xlsx':
+                length = int(self.headers.get('Content-Length', '0'))
+                if length <= 0 or length > 4_000_000:
+                    return self.send_json(400, {'error': 'The spreadsheet export request is empty or too large.'})
+                try:
+                    payload = json.loads(self.rfile.read(length) or '{}')
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    return self.send_json(400, {'error': 'The spreadsheet export request is not valid JSON.'})
+                rows = payload.get('rows') if isinstance(payload, dict) else None
+                title = payload.get('title', 'ledgerly-export') if isinstance(payload, dict) else 'ledgerly-export'
+                if not isinstance(title, str) or not isinstance(rows, list) or not rows or len(rows) > 5001:
+                    return self.send_json(400, {'error': 'Provide spreadsheet rows containing no more than 5,000 records.'})
+                cell_count = 0
+                for row in rows:
+                    if not isinstance(row, list) or len(row) > 20:
+                        return self.send_json(400, {'error': 'Spreadsheet rows must contain no more than 20 columns.'})
+                    cell_count += len(row)
+                    for cell in row:
+                        if isinstance(cell, str) and len(cell) > 32767:
+                            return self.send_json(400, {'error': 'A spreadsheet cell exceeds Excel’s 32,767-character limit.'})
+                        if isinstance(cell, bool) or cell is None or isinstance(cell, str):
+                            continue
+                        if not isinstance(cell, (int, float)) or (isinstance(cell, float) and not math.isfinite(cell)) or abs(cell) > 1e15:
+                            return self.send_json(400, {'error': 'Spreadsheet cells must be text, finite numbers, or empty.'})
+                if cell_count > 100_000:
+                    return self.send_json(400, {'error': 'The spreadsheet export contains too many cells.'})
+                with connection() as database:
+                    if not self.authenticated_user(database):
+                        return self.send_json(401, {'error': 'Please sign in again.'})
+                filename = re.sub(r'[^A-Za-z0-9._-]+', '-', title).strip('.-')[:80] or 'export'
+                body = build_xlsx(rows)
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+                self.send_header('Content-Disposition', f'attachment; filename="ledgerly-{filename}.xlsx"')
+                self.send_header('Cache-Control', 'no-store')
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
             if path == '/api/bank-reconciliation/import':
                 length = int(self.headers.get('Content-Length', '0'))
                 if length <= 0 or length > 1_000_000:
@@ -1445,12 +1591,11 @@ class LedgerlyHandler(SimpleHTTPRequestHandler):
                         (user['company_id'], json.dumps(saved_state)),
                     )
                     revision = database.execute('SELECT revision FROM company_states WHERE company_id = ?', (user['company_id'],)).fetchone()['revision']
-                    if previous_state:
-                        changes = describe_state_changes(previous_state, saved_state)
-                        for action, detail in changes[:50]:
-                            log_activity(database, user['company_id'], user['username'], action, detail)
-                        if len(changes) > 50:
-                            log_activity(database, user['company_id'], user['username'], 'Bulk update', f'{len(changes) - 50} more changes')
+                    changes = describe_state_changes(previous_state, saved_state)
+                    for action, detail in changes[:50]:
+                        log_activity(database, user['company_id'], user['username'], action, detail)
+                    if len(changes) > 50:
+                        log_activity(database, user['company_id'], user['username'], 'Bulk update', f'{len(changes) - 50} more changes')
                     company_name = str((saved_state.get('company') or {}).get('name') or '').strip()
                     if company_name:
                         database.execute('UPDATE companies SET name = ? WHERE id = ?', (company_name, user['company_id']))

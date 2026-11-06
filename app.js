@@ -260,7 +260,7 @@ function invoiceRows(invoices = state.invoices) {
 		const returnLabel = returnedAmount ? `<small class="item-sub" style="display:block;color:#b14f43">Returned: ${money(returnedAmount)}</small>` : '';
 		const paymentLabel = inv.status === 'Pending' || paidAmount > 0 ? `<small class="item-sub" style="display:block">Paid: ${money(paidAmount)} · Due: ${money(outstanding)}</small>` : '';
 		const paymentButton = outstanding > 0.005 ? `<button class="date-chip record-invoice-payment" type="button" data-invoice="${escHtml(inv.no)}">Add payment</button>` : '';
-		return `<tr><td><b>${escHtml(inv.no)}</b></td><td><span class="item-name">${escHtml(inv.customer)}</span><span class="item-sub">${inv.date}</span></td><td><span class="status ${statusClass(invoicePaymentStatus(inv))}">${invoicePaymentStatus(inv)}</span></td><td>${money(inv.total)}${paymentLabel}${returnLabel}<div class="section-toolbar">${paymentButton}<button class="date-chip invoice-statement" type="button" data-invoice="${escHtml(inv.no)}">Statement</button><button class="pdf-invoice" data-invoice="${escHtml(inv.no)}" title="Print or save as PDF" style="color:#08614d;border:1px solid #08614d;border-radius:5px;padding:4px 7px;font-size:11px;font-weight:700">PDF</button><button class="delivery-invoice" data-invoice="${escHtml(inv.no)}" title="Create delivery note" style="color:#08614d;border:1px solid #08614d;border-radius:5px;padding:4px 7px;margin-left:4px;font-size:11px;font-weight:700">${delivered ? 'Delivered' : 'Delivery note'}</button></div></td></tr>`;
+		return `<tr><td><b>${escHtml(inv.no)}</b></td><td><span class="item-name">${escHtml(inv.customer)}</span><span class="item-sub">${inv.date}</span></td><td><span class="status ${statusClass(invoicePaymentStatus(inv))}">${invoicePaymentStatus(inv)}</span></td><td>${money(inv.total)}${paymentLabel}${returnLabel}<div class="section-toolbar">${paymentButton}<button class="date-chip invoice-statement" type="button" data-invoice="${escHtml(inv.no)}">Print / PDF</button><button class="date-chip invoice-statement-xlsx" type="button" data-invoice="${escHtml(inv.no)}">Excel</button><button class="pdf-invoice" data-invoice="${escHtml(inv.no)}" title="Print or save as PDF" style="color:#08614d;border:1px solid #08614d;border-radius:5px;padding:4px 7px;font-size:11px;font-weight:700">PDF</button><button class="delivery-invoice" data-invoice="${escHtml(inv.no)}" title="Create delivery note" style="color:#08614d;border:1px solid #08614d;border-radius:5px;padding:4px 7px;margin-left:4px;font-size:11px;font-weight:700">${delivered ? 'Delivered' : 'Delivery note'}</button></div></td></tr>`;
 	}).join('');
 }
 
@@ -299,11 +299,31 @@ function printInvoiceStatement(invoiceNumber) {
 	popup.document.close();
 }
 
+function exportInvoiceStatement(invoiceNumber) {
+	const invoice = state.invoices.find(item => item.no === invoiceNumber);
+	if (!invoice) return Promise.resolve();
+	let payments = state.invoicePayments.filter(payment => payment.invoiceNo === invoice.no);
+	if (!payments.length && invoice.status === 'Paid') payments = [{ id: 'original', date: invoice.date, amount: invoice.total, method: invoice.paymentMethod || 'Cash', reference: 'Paid at issue' }];
+	let runningBalance = 0;
+	return downloadExcel(`invoice-statement-${invoice.no}`, [
+		['Invoice', 'Customer', 'Date', 'Entry', 'Reference', 'Charge', 'Payment', 'Balance'],
+		[invoice.no, invoice.customer, invoice.date, 'Invoice issued', invoice.no, Number(invoice.total) || 0, 0, Number(invoice.total) || 0],
+		...payments.map(payment => {
+			runningBalance += Number(payment.amount) || 0;
+			return [invoice.no, invoice.customer, payment.date || invoice.date, `Payment received · ${payment.method || ''}`, payment.reference || payment.id, 0, Number(payment.amount) || 0, Math.max(0, invoice.total - runningBalance)];
+		}),
+	]);
+}
+
 document.addEventListener('click', event => {
 	const paymentButton = event.target.closest('.record-invoice-payment');
 	if (paymentButton) { openInvoicePayment(paymentButton.dataset.invoice); return; }
 	const statementButton = event.target.closest('.invoice-statement');
 	if (statementButton) printInvoiceStatement(statementButton.dataset.invoice);
+	const statementExcelButton = event.target.closest('.invoice-statement-xlsx');
+	if (statementExcelButton) exportInvoiceStatement(statementExcelButton.dataset.invoice);
+	const customerPaymentButton = event.target.closest('#allocate-customer-payment');
+	if (customerPaymentButton) openCustomerPaymentAllocation(state.customerDetail);
 });
 document.getElementById('invoice-payment-close').addEventListener('click', closeInvoicePayment);
 document.getElementById('invoice-payment-modal-backdrop').addEventListener('click', event => { if (event.target.id === 'invoice-payment-modal-backdrop') closeInvoicePayment(); });
@@ -321,6 +341,38 @@ document.getElementById('invoice-payment-form').addEventListener('submit', event
 	if (state.invoicePayments.filter(payment => payment.invoiceNo === invoice.no).reduce((sum, payment) => sum + (Number(payment.amount) || 0), 0) >= Number(invoice.total) - 0.005) invoice.status = 'Paid';
 	saveState().then(() => {
 		closeInvoicePayment();
+		render();
+	}).catch(error => window.alert(`Payment was recorded on this device but not synced: ${error.message}`));
+});
+document.getElementById('customer-payment-allocation-close').addEventListener('click', closeCustomerPaymentAllocation);
+document.getElementById('customer-payment-allocation-backdrop').addEventListener('click', event => { if (event.target.id === 'customer-payment-allocation-backdrop') closeCustomerPaymentAllocation(); });
+document.getElementById('customer-payment-allocation-form').addEventListener('input', event => {
+	if (event.target.matches('#allocation-total, .payment-allocation-amount')) updatePaymentAllocationSummary();
+});
+document.getElementById('customer-payment-allocation-form').addEventListener('submit', event => {
+	event.preventDefault();
+	const total = Math.round((Number(document.getElementById('allocation-total').value) || 0) * 100) / 100;
+	const allocations = [...document.querySelectorAll('.payment-allocation-amount')].map(input => ({
+		invoice: state.invoices.find(item => item.no === input.dataset.invoice),
+		amount: Math.round((Number(input.value) || 0) * 100) / 100,
+	}));
+	const allocated = Math.round(allocations.reduce((sum, allocation) => sum + allocation.amount, 0) * 100) / 100;
+	if (total <= 0 || !allocations.some(allocation => allocation.amount > 0) || Math.abs(total - allocated) > 0.005 || allocations.some(allocation => !allocation.invoice || allocation.amount < 0 || allocation.amount > invoiceOutstanding(allocation.invoice) + 0.005)) {
+		window.alert('Allocate the full receipt amount to open invoices. No invoice allocation can exceed its balance due.');
+		return;
+	}
+	const date = formatSystemDateTime();
+	const dateISO = localDateISO();
+	const method = document.getElementById('allocation-payment-method').value;
+	const batchId = crypto.randomUUID();
+	const reference = document.getElementById('allocation-reference').value.trim() || `Receipt-${batchId.slice(0, 8).toUpperCase()}`;
+	allocations.filter(allocation => allocation.amount > 0).forEach(({ invoice, amount }) => {
+		const balance = invoiceOutstanding(invoice);
+		state.invoicePayments.push({ id: crypto.randomUUID(), batchId, invoiceNo: invoice.no, amount, date, dateISO, method, reference });
+		if (amount >= balance - 0.005) invoice.status = 'Paid';
+	});
+	saveState().then(() => {
+		closeCustomerPaymentAllocation();
 		render();
 	}).catch(error => window.alert(`Payment was recorded on this device but not synced: ${error.message}`));
 });
@@ -433,7 +485,8 @@ function renderCustomerAccount(customerName) {
 	const totalAdjustments = entries.reduce((sum, entry) => sum + entry.adjustment, 0);
 	const balance = entries.at(-1)?.balance || 0;
 	const amountRows = entries.map(entry => `<tr><td>${entry.date}</td><td><b>${entry.entry}</b></td><td>${escHtml(entry.reference)}</td><td>${escHtml(entry.method)}</td><td>${entry.debit ? money(entry.debit) : '—'}</td><td>${entry.credit ? money(entry.credit) : '—'}</td><td>${entry.adjustment ? money(entry.adjustment) : '—'}</td><td>${money(entry.balance)}</td><td><span class="status ${statusClass(entry.status)}">${escHtml(entry.status)}</span>${entry.kind === 'invoice' && invoiceOutstanding(invoices.find(invoice => invoice.no === entry.invoiceNo)) > 0.005 ? ` <button class="date-chip record-invoice-payment" type="button" data-invoice="${entry.invoiceNo}">Add payment</button>` : ''}</td></tr>`).join('') || '<tr><td colspan="9">No account activity recorded yet.</td></tr>';
-	return `<div class="page-heading"><div><div class="eyebrow">Customer account</div><h1>${escHtml(customer.name)}</h1><p>${escHtml(customer.mobile || 'No mobile number')} · ${escHtml(customer.address || 'No address saved')}</p></div><button class="date-chip" id="back-to-customers">← Customers</button></div><section class="stats-grid" style="margin-bottom:20px"><article class="stat-card"><span class="stat-label">Invoiced</span><strong class="stat-value">${money(totalInvoiced)}</strong><span class="stat-note">${invoices.length} invoice${invoices.length === 1 ? '' : 's'}</span></article><article class="stat-card"><span class="stat-label">Payments received</span><strong class="stat-value">${money(totalReceived)}</strong><span class="stat-note">Includes partial payments</span></article><article class="stat-card"><span class="stat-label">Adjustments</span><strong class="stat-value">${money(totalAdjustments)}</strong><span class="stat-note">Sales returns and credits</span></article><article class="stat-card"><span class="stat-label">${balance < -0.005 ? 'Customer credit' : 'Outstanding balance'}</span><strong class="stat-value">${money(Math.abs(balance))}</strong><span class="stat-note">${balance < -0.005 ? 'Credit due to customer' : 'Invoice balance due'}</span></article></section><section class="panel"><div class="panel-header"><h2>Customer ledger</h2><button class="date-chip customer-statement" type="button" data-customer="${escHtml(customer.name)}">Print statement</button></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Date</th><th>Entry</th><th>Reference</th><th>Method</th><th>Invoice charge</th><th>Payment</th><th>Adjustment</th><th>Balance</th><th>Status</th></tr></thead><tbody>${amountRows}</tbody></table></div></section>`;
+	const hasOutstanding = invoices.some(invoice => invoiceOutstanding(invoice) > 0.005);
+	return `<div class="page-heading"><div><div class="eyebrow">Customer account</div><h1>${escHtml(customer.name)}</h1><p>${escHtml(customer.mobile || 'No mobile number')} · ${escHtml(customer.address || 'No address saved')}</p></div><button class="date-chip" id="back-to-customers">← Customers</button></div><section class="stats-grid" style="margin-bottom:20px"><article class="stat-card"><span class="stat-label">Invoiced</span><strong class="stat-value">${money(totalInvoiced)}</strong><span class="stat-note">${invoices.length} invoice${invoices.length === 1 ? '' : 's'}</span></article><article class="stat-card"><span class="stat-label">Payments received</span><strong class="stat-value">${money(totalReceived)}</strong><span class="stat-note">Includes partial payments</span></article><article class="stat-card"><span class="stat-label">Adjustments</span><strong class="stat-value">${money(totalAdjustments)}</strong><span class="stat-note">Sales returns and credits</span></article><article class="stat-card"><span class="stat-label">${balance < -0.005 ? 'Customer credit' : 'Outstanding balance'}</span><strong class="stat-value">${money(Math.abs(balance))}</strong><span class="stat-note">${balance < -0.005 ? 'Credit due to customer' : 'Invoice balance due'}</span></article></section><section class="panel"><div class="panel-header"><h2>Customer ledger</h2><div class="section-toolbar">${hasOutstanding ? '<button class="primary-btn" id="allocate-customer-payment" type="button">Receive payment</button>' : ''}<button class="date-chip customer-statement" type="button" data-customer="${escHtml(customer.name)}">Print / PDF</button><button class="date-chip customer-statement-xlsx" type="button" data-customer="${escHtml(customer.name)}">Excel</button></div></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Date</th><th>Entry</th><th>Reference</th><th>Method</th><th>Invoice charge</th><th>Payment</th><th>Adjustment</th><th>Balance</th><th>Status</th></tr></thead><tbody>${amountRows}</tbody></table></div></section>`;
 }
 
 function printCustomerStatement(customerName) {
@@ -445,6 +498,36 @@ function printCustomerStatement(customerName) {
 	if (!popup) return;
 	popup.document.write(`<html><head><title>Customer statement - ${escHtml(customer.name)}</title><style>@page{size:landscape}body{font:12px Arial,sans-serif;color:#17211f;margin:32px}h1{color:#08614d;margin-bottom:6px}.meta{color:#53625e;line-height:1.7}table{width:100%;border-collapse:collapse;margin-top:22px;font-size:10px}th{background:#08614d;color:#fff;text-align:left;padding:9px 6px}td{border-bottom:1px solid #dfe7df;padding:8px 6px}.total{margin:20px 0 0 auto;text-align:right;font-size:15px;font-weight:bold}</style></head><body><h1>Customer account statement</h1><div class="meta"><b>${escHtml(customer.name)}</b><br>${escHtml(customer.address || '')}<br>${escHtml(customer.mobile || '')}${customer.vat ? `<br>VAT No. ${escHtml(customer.vat)}` : ''}</div><table><thead><tr><th>Date</th><th>Entry</th><th>Reference</th><th>Method</th><th>Invoice charge</th><th>Payment</th><th>Adjustment</th><th>Balance</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table><p class="total">${balance < -0.005 ? 'Customer credit' : 'Outstanding balance'}: ${money(Math.abs(balance))}</p><script>window.print();<\/script></body></html>`);
 	popup.document.close();
+}
+
+function exportCustomerStatement(customerName) {
+	const entries = customerLedgerEntries(customerName);
+	return downloadExcel(`customer-statement-${customerName}`, [
+		['Date', 'Entry', 'Reference', 'Method', 'Invoice charge', 'Payment', 'Adjustment', 'Balance', 'Status'],
+		...entries.map(entry => [entry.date, entry.entry, entry.reference, entry.method, entry.debit, entry.credit, entry.adjustment, entry.balance, entry.status]),
+	]);
+}
+
+function openCustomerPaymentAllocation(customerName) {
+	const invoices = state.invoices.filter(invoice => invoice.customer === customerName && invoiceOutstanding(invoice) > 0.005);
+	if (!invoices.length) return;
+	document.getElementById('allocation-customer-name').textContent = customerName;
+	document.getElementById('allocation-invoices').innerHTML = invoices.map(invoice => `<label>${escHtml(invoice.no)} · Due ${money(invoiceOutstanding(invoice))}<input class="payment-allocation-amount" data-invoice="${escHtml(invoice.no)}" type="number" min="0" max="${invoiceOutstanding(invoice).toFixed(2)}" step="0.01" value="0.00" required></label>`).join('');
+	document.getElementById('allocation-total').value = '';
+	document.getElementById('allocation-reference').value = '';
+	document.getElementById('allocation-summary').textContent = 'Allocated: SAR 0.00 · Enter the full receipt amount across the open invoices.';
+	document.getElementById('customer-payment-allocation-backdrop').hidden = false;
+	document.getElementById('allocation-total').focus();
+}
+
+function closeCustomerPaymentAllocation() {
+	document.getElementById('customer-payment-allocation-backdrop').hidden = true;
+}
+
+function updatePaymentAllocationSummary() {
+	const total = Math.round((Number(document.getElementById('allocation-total').value) || 0) * 100) / 100;
+	const allocated = Math.round([...document.querySelectorAll('.payment-allocation-amount')].reduce((sum, input) => sum + (Number(input.value) || 0), 0) * 100) / 100;
+	document.getElementById('allocation-summary').textContent = `Allocated: ${money(allocated)} · ${total > 0 ? `Receipt remainder: ${money(total - allocated)}` : 'Enter the receipt amount.'}`;
 }
 
 function renderCustomers() {
@@ -501,6 +584,28 @@ function downloadFile(name, content, type) {
 	link.download = name;
 	link.click();
 	URL.revokeObjectURL(link.href);
+}
+async function downloadExcel(title, rows) {
+	try {
+		const response = await fetch('/api/export/xlsx', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json', Authorization: `******'ledgerly-token') || ''}` },
+			body: JSON.stringify({ title, rows }),
+		});
+		if (!response.ok) {
+			const result = await response.json().catch(() => ({}));
+			throw new Error(result.error || 'Excel export failed.');
+		}
+		const link = document.createElement('a');
+		link.href = URL.createObjectURL(await response.blob());
+		link.download = response.headers.get('Content-Disposition')?.match(/filename="([^"]+)"/)?.[1] || 'ledgerly-export.xlsx';
+		document.body.append(link);
+		link.click();
+		link.remove();
+		setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+	} catch (error) {
+		window.alert(`Could not export Excel file: ${error.message}`);
+	}
 }
 function csvText(rows) {
 	const cell = value => `"${String(value ?? '').replace(/"/g, '""')}"`;
@@ -943,7 +1048,7 @@ function renderJournal() {
 function renderTrialBalance() {
 	const today = new Date().toISOString().slice(0, 10);
 	const rows = trialBalanceRows.map(row => `<tr><td><b>${escHtml(row.code)}</b></td><td>${escHtml(row.name)}</td><td>${money(row.debit)}</td><td>${money(row.credit)}</td><td>${row.balance ? `${money(row.balance)} ${row.balance_side}` : '—'}</td></tr>`).join('') || '<tr><td colspan="5">No account balances for this period.</td></tr>';
-	return `<div class="page-heading"><div><div class="eyebrow">Accounting report</div><h1>Trial balance</h1><p>Posted journal debits and credits for the selected period. All company accounts are included.</p></div><div><button type="button" class="date-chip" id="trial-balance-csv">Export Excel / CSV</button> <button type="button" class="date-chip" id="trial-balance-print">Print / PDF</button></div></div>${accountingError ? `<p role="alert" style="color:#b14f43">${escHtml(accountingError)}</p>` : ''}<section class="panel" style="margin-bottom:20px"><form id="trial-balance-filter" style="padding:16px;display:flex;gap:12px;align-items:end;flex-wrap:wrap"><label>From<input type="date" name="from" value="${escHtml(state.trialFrom || '')}" /></label><label>To<input type="date" name="to" value="${escHtml(state.trialTo || today)}" /></label><button class="primary-btn" type="submit">Run report</button></form></section><section class="panel"><div class="panel-header"><h2>Trial balance · ${escHtml(state.trialFrom || 'All dates')} to ${escHtml(state.trialTo || today)}</h2></div><div class="table-wrap"><table class="data-table" id="trial-balance-table"><thead><tr><th>Code</th><th>Account</th><th>Debits</th><th>Credits</th><th>Net balance</th></tr></thead><tbody>${rows}<tr><th colspan="2">Totals</th><th>${money(trialBalanceRows.reduce((sum, row) => sum + Number(row.debit || 0), 0))}</th><th>${money(trialBalanceRows.reduce((sum, row) => sum + Number(row.credit || 0), 0))}</th><th>${money(trialBalanceRows.reduce((sum, row) => sum + Number(row.debit || 0), 0))} / ${money(trialBalanceRows.reduce((sum, row) => sum + Number(row.credit || 0), 0))}</th></tr></tbody></table></div></section>${activityLogMarkup()}`;
+	return `<div class="page-heading"><div><div class="eyebrow">Accounting report</div><h1>Trial balance</h1><p>Posted journal debits and credits for the selected period. All company accounts are included.</p></div><div><button type="button" class="date-chip" id="trial-balance-csv">Export CSV</button> <button type="button" class="date-chip" id="trial-balance-xlsx">Export Excel</button> <button type="button" class="date-chip" id="trial-balance-print">Print / PDF</button></div></div>${accountingError ? `<p role="alert" style="color:#b14f43">${escHtml(accountingError)}</p>` : ''}<section class="panel" style="margin-bottom:20px"><form id="trial-balance-filter" style="padding:16px;display:flex;gap:12px;align-items:end;flex-wrap:wrap"><label>From<input type="date" name="from" value="${escHtml(state.trialFrom || '')}" /></label><label>To<input type="date" name="to" value="${escHtml(state.trialTo || today)}" /></label><button class="primary-btn" type="submit">Run report</button></form></section><section class="panel"><div class="panel-header"><h2>Trial balance · ${escHtml(state.trialFrom || 'All dates')} to ${escHtml(state.trialTo || today)}</h2></div><div class="table-wrap"><table class="data-table" id="trial-balance-table"><thead><tr><th>Code</th><th>Account</th><th>Debits</th><th>Credits</th><th>Net balance</th></tr></thead><tbody>${rows}<tr><th colspan="2">Totals</th><th>${money(trialBalanceRows.reduce((sum, row) => sum + Number(row.debit || 0), 0))}</th><th>${money(trialBalanceRows.reduce((sum, row) => sum + Number(row.credit || 0), 0))}</th><th>${money(trialBalanceRows.reduce((sum, row) => sum + Number(row.debit || 0), 0))} / ${money(trialBalanceRows.reduce((sum, row) => sum + Number(row.credit || 0), 0))}</th></tr></tbody></table></div></section>${activityLogMarkup()}`;
 }
 function reportControlsMarkup(formId, dateField = 'from') {
 	if (dateField === 'asOf') return `<form id="${formId}" class="panel" style="padding:16px;display:flex;gap:12px;align-items:end;flex-wrap:wrap"><label>As of<input type="date" name="as_of" value="${escHtml(accountingReportRange.asOf)}" required></label><button class="primary-btn" type="submit">Run report</button></form>`;
@@ -956,17 +1061,17 @@ function renderProfitLossReport() {
 	const report = profitLossReport;
 	const revenueRows = reportRowsMarkup(report?.revenue || [], row => row.credit - row.debit);
 	const expenseRows = reportRowsMarkup(report?.expenses || [], row => row.debit - row.credit);
-	return `<div class="page-heading"><div><div class="eyebrow">Accounting report</div><h1>Profit &amp; Loss</h1><p>Revenue and expenses from posted journal entries for the selected period.</p></div><div><button class="date-chip" id="profit-loss-csv" type="button">Export CSV</button> <button class="date-chip" id="profit-loss-print" type="button">Print / PDF</button></div></div>${accountingError ? `<p role="alert" style="color:#b14f43">${escHtml(accountingError)}</p>` : ''}${reportControlsMarkup('profit-loss-filter')}<section class="stats-grid report-stats"><article class="stat-card"><span class="stat-label">Revenue</span><strong class="stat-value">${money(report?.total_revenue || 0)}</strong></article><article class="stat-card"><span class="stat-label">Gross profit</span><strong class="stat-value">${money(report?.gross_profit || 0)}</strong></article><article class="stat-card"><span class="stat-label">Expenses</span><strong class="stat-value">${money(report?.total_expenses || 0)}</strong></article><article class="stat-card"><span class="stat-label">Net profit</span><strong class="stat-value">${money(report?.net_profit || 0)}</strong></article></section><section class="panel"><div class="panel-header"><h2>Revenue</h2></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Code</th><th>Account</th><th>Amount</th></tr></thead><tbody>${revenueRows}<tr><th colspan="2">Total revenue</th><th>${money(report?.total_revenue || 0)}</th></tr></tbody></table></div><div class="panel-header"><h2>Expenses</h2></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Code</th><th>Account</th><th>Amount</th></tr></thead><tbody>${expenseRows}<tr><th colspan="2">Total expenses</th><th>${money(report?.total_expenses || 0)}</th></tr><tr><th colspan="2">Net profit</th><th>${money(report?.net_profit || 0)}</th></tr></tbody></table></div></section>`;
+	return `<div class="page-heading"><div><div class="eyebrow">Accounting report</div><h1>Profit &amp; Loss</h1><p>Revenue and expenses from posted journal entries for the selected period.</p></div><div><button class="date-chip" id="profit-loss-csv" type="button">Export CSV</button> <button class="date-chip" id="profit-loss-xlsx" type="button">Export Excel</button> <button class="date-chip" id="profit-loss-print" type="button">Print / PDF</button></div></div>${accountingError ? `<p role="alert" style="color:#b14f43">${escHtml(accountingError)}</p>` : ''}${reportControlsMarkup('profit-loss-filter')}<section class="stats-grid report-stats"><article class="stat-card"><span class="stat-label">Revenue</span><strong class="stat-value">${money(report?.total_revenue || 0)}</strong></article><article class="stat-card"><span class="stat-label">Gross profit</span><strong class="stat-value">${money(report?.gross_profit || 0)}</strong></article><article class="stat-card"><span class="stat-label">Expenses</span><strong class="stat-value">${money(report?.total_expenses || 0)}</strong></article><article class="stat-card"><span class="stat-label">Net profit</span><strong class="stat-value">${money(report?.net_profit || 0)}</strong></article></section><section class="panel"><div class="panel-header"><h2>Revenue</h2></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Code</th><th>Account</th><th>Amount</th></tr></thead><tbody>${revenueRows}<tr><th colspan="2">Total revenue</th><th>${money(report?.total_revenue || 0)}</th></tr></tbody></table></div><div class="panel-header"><h2>Expenses</h2></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Code</th><th>Account</th><th>Amount</th></tr></thead><tbody>${expenseRows}<tr><th colspan="2">Total expenses</th><th>${money(report?.total_expenses || 0)}</th></tr><tr><th colspan="2">Net profit</th><th>${money(report?.net_profit || 0)}</th></tr></tbody></table></div></section>`;
 }
 function renderBalanceSheetReport() {
 	const report = balanceSheetReport;
 	const rows = (items, creditNormal = false) => items.map(row => `<tr><td><b>${escHtml(row.code)}</b></td><td>${escHtml(row.name)}</td><td class="num">${money(creditNormal ? -row.balance : row.balance)}</td></tr>`).join('') || '<tr><td colspan="3">No posted balances.</td></tr>';
-	return `<div class="page-heading"><div><div class="eyebrow">Accounting report</div><h1>Balance sheet</h1><p>Assets, liabilities, equity, and current earnings from posted journal entries.</p></div><div><button class="date-chip" id="balance-sheet-csv" type="button">Export CSV</button> <button class="date-chip" id="balance-sheet-print" type="button">Print / PDF</button></div></div>${accountingError ? `<p role="alert" style="color:#b14f43">${escHtml(accountingError)}</p>` : ''}${reportControlsMarkup('balance-sheet-filter', 'asOf')}<section class="panel"><div class="panel-header"><h2>Assets · ${escHtml(report?.as_of || accountingReportRange.asOf)}</h2></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Code</th><th>Account</th><th>Balance</th></tr></thead><tbody>${rows(report?.assets || [])}<tr><th colspan="2">Total assets</th><th>${money(report?.total_assets || 0)}</th></tr></tbody></table></div><div class="panel-header"><h2>Liabilities</h2></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Code</th><th>Account</th><th>Balance</th></tr></thead><tbody>${rows(report?.liabilities || [], true)}<tr><th colspan="2">Total liabilities</th><th>${money(report?.total_liabilities || 0)}</th></tr></tbody></table></div><div class="panel-header"><h2>Equity</h2></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Code</th><th>Account</th><th>Balance</th></tr></thead><tbody>${rows(report?.equity || [], true)}<tr><td colspan="2">Current earnings</td><td>${money(report?.current_earnings || 0)}</td></tr><tr><th colspan="2">Total equity</th><th>${money(report?.total_equity || 0)}</th></tr><tr><th colspan="2">Liabilities + equity</th><th>${money((report?.total_liabilities || 0) + (report?.total_equity || 0))}</th></tr></tbody></table></div></section>${Math.abs(report?.balance_difference || 0) > 0.01 ? `<p role="alert" style="color:#b14f43">The balance sheet is out of balance by ${money(report.balance_difference)}. Check opening balances and journal entries.</p>` : ''}`;
+	return `<div class="page-heading"><div><div class="eyebrow">Accounting report</div><h1>Balance sheet</h1><p>Assets, liabilities, equity, and current earnings from posted journal entries.</p></div><div><button class="date-chip" id="balance-sheet-csv" type="button">Export CSV</button> <button class="date-chip" id="balance-sheet-xlsx" type="button">Export Excel</button> <button class="date-chip" id="balance-sheet-print" type="button">Print / PDF</button></div></div>${accountingError ? `<p role="alert" style="color:#b14f43">${escHtml(accountingError)}</p>` : ''}${reportControlsMarkup('balance-sheet-filter', 'asOf')}<section class="panel"><div class="panel-header"><h2>Assets · ${escHtml(report?.as_of || accountingReportRange.asOf)}</h2></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Code</th><th>Account</th><th>Balance</th></tr></thead><tbody>${rows(report?.assets || [])}<tr><th colspan="2">Total assets</th><th>${money(report?.total_assets || 0)}</th></tr></tbody></table></div><div class="panel-header"><h2>Liabilities</h2></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Code</th><th>Account</th><th>Balance</th></tr></thead><tbody>${rows(report?.liabilities || [], true)}<tr><th colspan="2">Total liabilities</th><th>${money(report?.total_liabilities || 0)}</th></tr></tbody></table></div><div class="panel-header"><h2>Equity</h2></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Code</th><th>Account</th><th>Balance</th></tr></thead><tbody>${rows(report?.equity || [], true)}<tr><td colspan="2">Current earnings</td><td>${money(report?.current_earnings || 0)}</td></tr><tr><th colspan="2">Total equity</th><th>${money(report?.total_equity || 0)}</th></tr><tr><th colspan="2">Liabilities + equity</th><th>${money((report?.total_liabilities || 0) + (report?.total_equity || 0))}</th></tr></tbody></table></div></section>${Math.abs(report?.balance_difference || 0) > 0.01 ? `<p role="alert" style="color:#b14f43">The balance sheet is out of balance by ${money(report.balance_difference)}. Check opening balances and journal entries.</p>` : ''}`;
 }
 function renderCashFlowReport() {
 	const report = cashFlowReport;
 	const transactions = (report?.transactions || []).map(row => `<tr><td>${escHtml(row.date)}</td><td><b>${escHtml(row.reference || '—')}</b></td><td>${escHtml(row.memo || '')}</td><td>${escHtml(row.counterpart_accounts || 'Cash transfer')}</td><td class="num">${money(row.cash_change)}</td></tr>`).join('') || '<tr><td colspan="5">No cash or bank movements in this period.</td></tr>';
-	return `<div class="page-heading"><div><div class="eyebrow">Accounting report</div><h1>Cash flow</h1><p>Cash and bank movements are calculated from posted journal entries. This report does not include unposted or unreconciled statement-only items.</p></div><div><button class="date-chip" id="cash-flow-csv" type="button">Export CSV</button> <button class="date-chip" id="cash-flow-print" type="button">Print / PDF</button></div></div>${accountingError ? `<p role="alert" style="color:#b14f43">${escHtml(accountingError)}</p>` : ''}${reportControlsMarkup('cash-flow-filter')}<section class="stats-grid report-stats"><article class="stat-card"><span class="stat-label">Opening balance</span><strong class="stat-value">${money(report?.opening_balance || 0)}</strong></article><article class="stat-card"><span class="stat-label">Cash received</span><strong class="stat-value">${money(report?.receipts || 0)}</strong></article><article class="stat-card"><span class="stat-label">Cash paid</span><strong class="stat-value">${money(report?.payments || 0)}</strong></article><article class="stat-card"><span class="stat-label">Net change</span><strong class="stat-value">${money(report?.net_change || 0)}</strong></article><article class="stat-card"><span class="stat-label">Closing balance</span><strong class="stat-value">${money(report?.closing_balance || 0)}</strong></article></section><section class="panel"><div class="panel-header"><h2>Cash and bank accounts</h2><span>${(report?.cash_accounts || []).map(account => `${escHtml(account.code)} · ${escHtml(account.name)}`).join(' &nbsp; ') || 'No cash or bank accounts found'}</span></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Date</th><th>Reference</th><th>Description</th><th>Counterpart accounts</th><th>Cash movement</th></tr></thead><tbody>${transactions}</tbody></table></div></section>`;
+	return `<div class="page-heading"><div><div class="eyebrow">Accounting report</div><h1>Cash flow</h1><p>Cash and bank movements are calculated from posted journal entries. This report does not include unposted or unreconciled statement-only items.</p></div><div><button class="date-chip" id="cash-flow-csv" type="button">Export CSV</button> <button class="date-chip" id="cash-flow-xlsx" type="button">Export Excel</button> <button class="date-chip" id="cash-flow-print" type="button">Print / PDF</button></div></div>${accountingError ? `<p role="alert" style="color:#b14f43">${escHtml(accountingError)}</p>` : ''}${reportControlsMarkup('cash-flow-filter')}<section class="stats-grid report-stats"><article class="stat-card"><span class="stat-label">Opening balance</span><strong class="stat-value">${money(report?.opening_balance || 0)}</strong></article><article class="stat-card"><span class="stat-label">Cash received</span><strong class="stat-value">${money(report?.receipts || 0)}</strong></article><article class="stat-card"><span class="stat-label">Cash paid</span><strong class="stat-value">${money(report?.payments || 0)}</strong></article><article class="stat-card"><span class="stat-label">Net change</span><strong class="stat-value">${money(report?.net_change || 0)}</strong></article><article class="stat-card"><span class="stat-label">Closing balance</span><strong class="stat-value">${money(report?.closing_balance || 0)}</strong></article></section><section class="panel"><div class="panel-header"><h2>Cash and bank accounts</h2><span>${(report?.cash_accounts || []).map(account => `${escHtml(account.code)} · ${escHtml(account.name)}`).join(' &nbsp; ') || 'No cash or bank accounts found'}</span></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Date</th><th>Reference</th><th>Description</th><th>Counterpart accounts</th><th>Cash movement</th></tr></thead><tbody>${transactions}</tbody></table></div></section>`;
 }
 function renderBankReconciliation() {
 	const cashAccounts = accountingAccounts.filter(account => account.is_active && account.account_type === 'asset' && (/^10/.test(account.code) || /cash|bank/i.test(account.name)));
@@ -1068,6 +1173,13 @@ function accountingReportRows(type) {
 		['Closing balance', '', '', '', Number(report.closing_balance || 0).toFixed(2)],
 	];
 }
+function excelReportRows(type) {
+	const numericColumn = type === 'cash-flow' ? 4 : 3;
+	return accountingReportRows(type).map((row, index) => row.map((cell, column) => {
+		if (index > 0 && column === numericColumn && typeof cell === 'string' && /^-?\d+(?:\.\d+)?$/.test(cell)) return Number(cell);
+		return cell;
+	}));
+}
 function printAccountingReport(title, rows, period) {
 	const popup = window.open('', '_blank', 'width=1000,height=800');
 	if (!popup) return;
@@ -1131,6 +1243,11 @@ document.addEventListener('click', async event => {
 	if (event.target.closest('#trial-balance-csv')) {
 		const rows = [['Code', 'Account', 'Type', 'Debits', 'Credits', 'Net balance', 'Balance side'], ...trialBalanceRows.map(row => [row.code, row.name, row.account_type, Number(row.debit).toFixed(2), Number(row.credit).toFixed(2), Number(row.balance).toFixed(2), row.balance_side])];
 		downloadFile(`ledgerly-trial-balance-${state.trialTo || new Date().toISOString().slice(0, 10)}.csv`, csvText(rows), 'text/csv;charset=utf-8');
+		return;
+	}
+	if (event.target.closest('#trial-balance-xlsx')) {
+		const rows = [['Code', 'Account', 'Type', 'Debits', 'Credits', 'Net balance', 'Balance side'], ...trialBalanceRows.map(row => [row.code, row.name, row.account_type, Number(row.debit), Number(row.credit), Number(row.balance), row.balance_side])];
+		downloadExcel(`trial-balance-${state.trialTo || new Date().toISOString().slice(0, 10)}`, rows);
 		return;
 	}
 	if (event.target.closest('#trial-balance-print')) printTrialBalance();
@@ -1286,6 +1403,13 @@ document.addEventListener('click', async event => {
 		const type = reportButton.id === 'profit-loss-csv' ? 'profit-loss' : reportButton.id === 'balance-sheet-csv' ? 'balance-sheet' : 'cash-flow';
 		const dateSuffix = type === 'balance-sheet' ? accountingReportRange.asOf : accountingReportRange.from;
 		downloadFile(`ledgerly-${type}-${dateSuffix}.csv`, csvText(accountingReportRows(type)), 'text/csv;charset=utf-8');
+		return;
+	}
+	const reportExcelButton = event.target.closest('#profit-loss-xlsx, #balance-sheet-xlsx, #cash-flow-xlsx');
+	if (reportExcelButton) {
+		const type = reportExcelButton.id === 'profit-loss-xlsx' ? 'profit-loss' : reportExcelButton.id === 'balance-sheet-xlsx' ? 'balance-sheet' : 'cash-flow';
+		const dateSuffix = type === 'balance-sheet' ? accountingReportRange.asOf : accountingReportRange.from;
+		downloadExcel(`${type}-${dateSuffix}`, excelReportRows(type));
 		return;
 	}
 	const printButton = event.target.closest('#profit-loss-print, #balance-sheet-print, #cash-flow-print');
@@ -1705,7 +1829,7 @@ function syncCustomerTypeFields() {
 document.getElementById('customer-type').addEventListener('change', syncCustomerTypeFields);
 syncCustomerTypeFields();
 document.addEventListener('click', event => { const deleteCustomer = event.target.closest('.delete-customer'); if (deleteCustomer) { const customerName = deleteCustomer.dataset.customer; if (window.confirm(`Delete ${customerName}? Existing invoices will be kept.`)) { state.customers = state.customers.filter(customer => customer.name !== customerName); if (state.customerDetail === customerName) state.customerDetail = null; saveState(); render(); } return; } const customerDetail = event.target.closest('.customer-detail'); if (customerDetail) { state.customerDetail = customerDetail.dataset.customer; render(); return; } if (event.target.closest('#back-to-customers')) { state.customerDetail = null; render(); return; } if (event.target.closest('#add-customer')) { document.getElementById('customer-form').reset(); syncCustomerTypeFields(); document.getElementById('customer-modal-backdrop').hidden = false; document.getElementById('customer-name').focus(); } });
-document.addEventListener('click', event => { const statementButton = event.target.closest('.customer-statement'); if (statementButton) printCustomerStatement(statementButton.dataset.customer); });
+document.addEventListener('click', event => { const statementButton = event.target.closest('.customer-statement'); if (statementButton) printCustomerStatement(statementButton.dataset.customer); const excelButton = event.target.closest('.customer-statement-xlsx'); if (excelButton) exportCustomerStatement(excelButton.dataset.customer); });
 document.getElementById('customer-modal-close').addEventListener('click', () => { document.getElementById('customer-modal-backdrop').hidden = true; });
 document.getElementById('customer-modal-backdrop').addEventListener('click', event => { if (event.target.id === 'customer-modal-backdrop') event.currentTarget.hidden = true; });
 document.getElementById('customer-form').addEventListener('submit', event => {
