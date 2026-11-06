@@ -233,8 +233,8 @@ function returnVatTotal(returned) {
 	return Number(returned.refundVat) || (returned.items || []).reduce((sum, item) => sum + itemLineValues(item).vat, 0);
 }
 
-function invoiceRows() {
-	return state.invoices.map(inv => {
+function invoiceRows(invoices = state.invoices) {
+	return invoices.map(inv => {
 		const delivered = state.deliveryNotes.some(note => note.invoice === inv.no);
 		const returnedAmount = invoiceReturnTotal(inv.no);
 		const paidAmount = invoicePaidAmount(inv);
@@ -307,11 +307,23 @@ document.getElementById('invoice-payment-form').addEventListener('submit', event
 	}).catch(error => window.alert(`Payment was recorded on this device but not synced: ${error.message}`));
 });
 
+function isCurrentMonth(date) {
+	if (!date) return false;
+	const now = new Date();
+	return date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth();
+}
+
+function currentMonthInvoices() {
+	return state.invoices.filter(invoice => isCurrentMonth(parseDocDate(invoice.date)));
+}
+
 function getOverviewStats() {
-	const paidInvoices = state.invoices.filter(invoice => invoicePaymentStatus(invoice) === 'Paid');
-	const pendingInvoices = state.invoices.filter(invoice => invoiceOutstanding(invoice) > 0.005);
+	const monthInvoices = currentMonthInvoices();
+	const monthReturns = state.returns.filter(record => isCurrentMonth(parseDocDate(record.date)));
+	const paidInvoices = monthInvoices.filter(invoice => invoicePaymentStatus(invoice) === 'Paid');
+	const pendingInvoices = monthInvoices.filter(invoice => invoiceOutstanding(invoice) > 0.005);
 	const totalStock = state.products.reduce((sum, product) => sum + (Number(product.stock) || 0), 0);
-	const returnedUnits = state.returns.reduce((sum, record) => sum + (record.items || []).reduce((itemSum, item) => itemSum + (Number(item.quantity) || 0), 0), 0);
+	const returnedUnits = monthReturns.reduce((sum, record) => sum + (record.items || []).reduce((itemSum, item) => itemSum + (Number(item.quantity) || 0), 0), 0);
 
 	return {
 		netSales: paidInvoices.reduce((sum, invoice) => sum + (Number(invoice.total) || 0), 0),
@@ -324,14 +336,24 @@ function getOverviewStats() {
 }
 
 function paymentHistoryRows() {
-	return state.invoices.slice(0, 5).map(invoice => `
+	const payments = state.invoicePayments
+		.filter(payment => isCurrentMonth(parseDocDate(payment.date)))
+		.map(payment => {
+			const invoice = state.invoices.find(entry => entry.no === payment.invoiceNo);
+			return invoice ? { invoice, amount: Number(payment.amount) || 0, date: payment.date, method: payment.method } : null;
+		})
+		.filter(Boolean);
+	state.invoices.filter(invoice => invoicePaymentStatus(invoice) === 'Paid' && !state.invoicePayments.some(payment => payment.invoiceNo === invoice.no))
+		.filter(invoice => isCurrentMonth(parseDocDate(invoice.date)))
+		.forEach(invoice => payments.push({ invoice, amount: Number(invoice.total) || 0, date: invoice.date, method: invoice.paymentMethod }));
+	return payments.sort((a, b) => (parseDocDate(b.date) || 0) - (parseDocDate(a.date) || 0)).slice(0, 5).map(({ invoice, amount, date, method }) => `
 		<div class="activity-row">
-			<span class="activity-dot ${invoice.status === 'Paid' ? 'mint' : 'yellow'}">${(invoice.paymentMethod || 'C').charAt(0)}</span>
+			<span class="activity-dot mint">${(method || 'C').charAt(0)}</span>
 			<div class="activity-copy">
 				<b>${escHtml(invoice.customer)}</b>
-				<small>${escHtml(invoice.no)} · ${escHtml(invoice.paymentMethod || 'Cash')}</small>
+				<small>${escHtml(invoice.no)} · ${escHtml(date)} · ${escHtml(method || 'Cash')}</small>
 			</div>
-			<span class="activity-amount">${money(invoice.total)}</span>
+			<span class="activity-amount">${money(amount)}</span>
 		</div>
 	`).join('') || '<div class="empty-state"><p>No payment activity yet.</p></div>';
 }
@@ -342,7 +364,7 @@ function recentActivityRows() {
 		...state.returns.map(entry => ({ at: parseDocDate(entry.date), tone: 'yellow', mark: '↩', title: `Return ${entry.no}`, sub: entry.customer, amount: `-${money(entry.refundTotal || 0)}` })),
 		...state.purchases.map(entry => ({ at: purchaseDate(entry), tone: 'mint', mark: 'P', title: `Purchase ${entry.no}`, sub: entry.supplier, amount: money(purchaseTotals(entry).total) })),
 		...state.expenses.map(entry => ({ at: purchaseDate(entry), tone: 'yellow', mark: 'E', title: `Expense ${entry.no}`, sub: entry.category, amount: money(expenseValues(entry).total) })),
-	].filter(event => event.at).sort((a, b) => b.at - a.at).slice(0, 6);
+	].filter(event => isCurrentMonth(event.at)).sort((a, b) => b.at - a.at).slice(0, 6);
 	return events.map(event => `<div class="activity-row"><span class="activity-dot ${event.tone}">${event.mark}</span><div class="activity-copy"><b>${escHtml(event.title)}</b><small>${escHtml(event.sub) || '—'}</small></div><span class="activity-amount">${escHtml(event.amount)}</span></div>`).join('') || '<div class="activity-row"><div class="activity-copy"><b>No activity yet</b><small>Create an invoice to get started.</small></div></div>';
 }
 function lowStockRows() {
@@ -350,7 +372,8 @@ function lowStockRows() {
 	return low.map(product => `<div class="activity-row"><span class="activity-dot yellow">!</span><div class="activity-copy"><b>${escHtml(product.name)}</b><small>${escHtml(product.id)}</small></div><span class="activity-amount">${Number(product.stock) || 0} left</span></div>`).join('') || '<div class="activity-row"><div class="activity-copy"><b>All items are well stocked</b><small>Nothing below 12 units.</small></div></div>';
 }function renderOverview() {
 	const { netSales, outstanding, totalStock, returnedUnits, paidCount, pendingCount } = getOverviewStats();
-	return `<div class="page-heading"><div><div class="eyebrow">Tuesday, September 23, 2026</div><h1>Hello</h1><p>Here's what's happening across ${escHtml(state.company.name || 'your business')} today.</p></div></div><section class="stats-grid"><div class="stat-card"><span class="stat-label">Net sales</span><strong class="stat-value">${money(netSales)}</strong><span class="stat-note">${paidCount} paid invoices</span><span class="stat-icon bg-mint">↗</span></div><div class="stat-card"><span class="stat-label">Outstanding</span><strong class="stat-value">${money(outstanding)}</strong><span class="stat-note down">${pendingCount} pending invoices</span><span class="stat-icon bg-yellow">$</span></div><div class="stat-card"><span class="stat-label">Items in stock</span><strong class="stat-value">${totalStock}</strong><span class="stat-note">Updated live</span><span class="stat-icon bg-blue">▦</span></div><div class="stat-card"><span class="stat-label">Returns this month</span><strong class="stat-value">${returnedUnits}</strong><span class="stat-note down">${state.returns.length} return records</span><span class="stat-icon bg-coral">↩</span></div></section><div class="dashboard-grid"><section class="panel"><div class="panel-header"><h2>Recent invoices</h2><a data-view-link="invoices">View all →</a></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Invoice</th><th>Customer</th><th>Status</th><th>Total</th></tr></thead><tbody>${invoiceRows()}</tbody></table></div></section><section class="panel"><div class="panel-header"><h2>Payment history</h2><a>Today</a></div><div class="activity">${paymentHistoryRows()}</div></section><section class="panel"><div class="panel-header"><h2>Recent activity</h2></div><div class="activity">${recentActivityRows()}</div></section><section class="panel"><div class="panel-header"><h2>Low stock</h2><a data-view-link="inventory">Inventory →</a></div><div class="activity">${lowStockRows()}</div></section></div><div class="quick-actions"><button class="quick-action" data-view-link="inventory"><span>▦</span><b>Adjust stock</b><small>Receive or move items</small></button><button class="quick-action" id="quick-delivery"><span>⌁</span><b>Delivery note</b><small>Prepare an order</small></button><button class="quick-action" id="quick-return"><span>↩</span><b>Process return</b><small>Restock an item</small></button></div>`;
+	const monthLabel = new Intl.DateTimeFormat(undefined, { month: 'long', year: 'numeric' }).format(new Date());
+	return `<div class="page-heading"><div><div class="eyebrow">${monthLabel} overview</div><h1>Hello</h1><p>Showing this month's activity for ${escHtml(state.company.name || 'your business')}.</p></div></div><section class="stats-grid"><div class="stat-card"><span class="stat-label">Net sales</span><strong class="stat-value">${money(netSales)}</strong><span class="stat-note">${paidCount} paid invoices this month</span><span class="stat-icon bg-mint">↗</span></div><div class="stat-card"><span class="stat-label">Outstanding</span><strong class="stat-value">${money(outstanding)}</strong><span class="stat-note down">${pendingCount} pending invoices this month</span><span class="stat-icon bg-yellow">$</span></div><div class="stat-card"><span class="stat-label">Items in stock</span><strong class="stat-value">${totalStock}</strong><span class="stat-note">Current stock snapshot</span><span class="stat-icon bg-blue">▦</span></div><div class="stat-card"><span class="stat-label">Returns this month</span><strong class="stat-value">${returnedUnits}</strong><span class="stat-note down">${state.returns.filter(record => isCurrentMonth(parseDocDate(record.date))).length} return records</span><span class="stat-icon bg-coral">↩</span></div></section><div class="dashboard-grid"><section class="panel"><div class="panel-header"><h2>Recent invoices</h2><a data-view-link="invoices">View all →</a></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Invoice</th><th>Customer</th><th>Status</th><th>Total</th></tr></thead><tbody>${invoiceRows(currentMonthInvoices().slice(0, 5)) || '<tr><td colspan="4">No invoices this month.</td></tr>'}</tbody></table></div></section><section class="panel"><div class="panel-header"><h2>Payment history</h2><a>This month</a></div><div class="activity">${paymentHistoryRows()}</div></section><section class="panel"><div class="panel-header"><h2>Recent activity</h2></div><div class="activity">${recentActivityRows()}</div></section><section class="panel"><div class="panel-header"><h2>Low stock</h2><a data-view-link="inventory">Inventory →</a></div><div class="activity">${lowStockRows()}</div></section></div><div class="quick-actions"><button class="quick-action" data-view-link="inventory"><span>▦</span><b>Adjust stock</b><small>Receive or move items</small></button><button class="quick-action" id="quick-delivery"><span>⌁</span><b>Delivery note</b><small>Prepare an order</small></button><button class="quick-action" id="quick-return"><span>↩</span><b>Process return</b><small>Restock an item</small></button></div>`;
 }
 
 function renderInvoices() { return `<div class="page-heading"><div><div class="eyebrow">Sales ledger</div><h1>Invoices</h1><p>Create, track, and collect every customer invoice.</p></div></div><section class="panel"><div class="panel-header"><h2>All invoices <span style="color:#9ca59f;font-weight:400">(${state.invoices.length})</span></h2><div class="section-toolbar"><input class="filter-input" id="invoice-filter" placeholder="⌕  Search invoices" /></div></div><div class="table-wrap"><table class="data-table" id="invoice-table"><thead><tr><th>Invoice</th><th>Customer</th><th>Status</th><th>Total</th></tr></thead><tbody>${invoiceRows()}</tbody></table></div></section>`; }
@@ -426,6 +449,10 @@ function renderReturns() {
 }
 
 function parseDocDate(value) {
+	if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)) {
+		const [year, month, day] = value.split('-').map(Number);
+		return new Date(year, month - 1, day, 12);
+	}
 	const time = Date.parse(value);
 	return Number.isNaN(time) ? null : new Date(time);
 }
@@ -1062,10 +1089,10 @@ function resetDashboardMetrics() {
 	if (values.length < 4 || notes.length < 4) return;
 	const { netSales, outstanding, totalStock, returnedUnits, paidCount, pendingCount } = getOverviewStats();
 	[money(netSales), money(outstanding), String(totalStock), String(returnedUnits)].forEach((value, index) => { values[index].textContent = value; });
-	notes[0].textContent = `${paidCount} paid invoices`;
-	notes[1].textContent = `${pendingCount} pending invoices`;
-	notes[2].textContent = 'Updated live';
-	notes[3].textContent = `${state.returns.length} return records`;
+	notes[0].textContent = `${paidCount} paid invoices this month`;
+	notes[1].textContent = `${pendingCount} pending invoices this month`;
+	notes[2].textContent = 'Current stock snapshot';
+	notes[3].textContent = `${state.returns.filter(record => isCurrentMonth(parseDocDate(record.date))).length} return records`;
 }
 
 function renderQuotations() {
