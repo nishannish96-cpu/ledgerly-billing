@@ -189,7 +189,7 @@ class RoommateHandler(SimpleHTTPRequestHandler):
         path = urlparse(self.path).path
         if path == '/api/setup/status':
             with connection() as database:
-                setup_required = database.execute('SELECT 1 FROM users LIMIT 1').fetchone() is None
+                setup_required = database.execute('SELECT 1 FROM users WHERE is_admin = 1 LIMIT 1').fetchone() is None
             return self.send_json(200, {'setup_required': setup_required})
         if path != '/api/data':
             return super().do_GET()
@@ -253,8 +253,8 @@ class RoommateHandler(SimpleHTTPRequestHandler):
                     return self.send_json(400, {'error': 'Password must be between 8 and 128 characters.'})
                 with connection() as database:
                     database.execute('BEGIN IMMEDIATE')
-                    if database.execute('SELECT 1 FROM users LIMIT 1').fetchone():
-                        return self.send_json(409, {'error': 'Initial admin setup is already complete. Please sign in.'})
+                    if database.execute('SELECT 1 FROM users WHERE is_admin = 1 LIMIT 1').fetchone():
+                        return self.send_json(409, {'error': 'An admin account already exists. Please sign in as the house admin.'})
                     roommate = database.execute('SELECT id FROM roommates WHERE name = ?', (name,)).fetchone()
                     roommate_id = roommate['id'] if roommate else database.execute(
                         'INSERT INTO roommates (name) VALUES (?)', (name,)).lastrowid
