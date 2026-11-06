@@ -187,6 +187,10 @@ class RoommateHandler(SimpleHTTPRequestHandler):
 
     def do_GET(self):
         path = urlparse(self.path).path
+        if path == '/api/setup/status':
+            with connection() as database:
+                setup_required = database.execute('SELECT 1 FROM users LIMIT 1').fetchone() is None
+            return self.send_json(200, {'setup_required': setup_required})
         if path != '/api/data':
             return super().do_GET()
         session = self.current_session()
@@ -236,6 +240,35 @@ class RoommateHandler(SimpleHTTPRequestHandler):
         path = urlparse(self.path).path
         try:
             payload = self.read_json()
+
+            if path == '/api/setup/admin':
+                name = normalise_name(payload.get('name'))
+                username = normalise_username(payload.get('username'))
+                password = payload.get('password')
+                if not NAME_PATTERN.fullmatch(name):
+                    return self.send_json(400, {'error': 'Enter your name using letters, numbers, spaces, - or _ (max 40 characters).'})
+                if not NAME_PATTERN.fullmatch(username):
+                    return self.send_json(400, {'error': 'Enter a username using letters, numbers, spaces, - or _ (max 40 characters).'})
+                if not isinstance(password, str) or not 8 <= len(password) <= 128:
+                    return self.send_json(400, {'error': 'Password must be between 8 and 128 characters.'})
+                with connection() as database:
+                    database.execute('BEGIN IMMEDIATE')
+                    if database.execute('SELECT 1 FROM users LIMIT 1').fetchone():
+                        return self.send_json(409, {'error': 'Initial admin setup is already complete. Please sign in.'})
+                    roommate = database.execute('SELECT id FROM roommates WHERE name = ?', (name,)).fetchone()
+                    roommate_id = roommate['id'] if roommate else database.execute(
+                        'INSERT INTO roommates (name) VALUES (?)', (name,)).lastrowid
+                    salt, digest = password_hash(password)
+                    database.execute(
+                        'INSERT INTO users (username, password_hash, password_salt, roommate_id, is_admin) VALUES (?, ?, ?, ?, 1)',
+                        (username, digest, salt, roommate_id),
+                    )
+                    user = database.execute('SELECT * FROM users WHERE username = ?', (username,)).fetchone()
+                token = create_session(user)
+                return self.send_json(201, {
+                    'token': token,
+                    'user': {'username': user['username'], 'is_admin': True},
+                })
 
             if path == '/api/admin/import-local-users':
                 import_token = os.environ.get('ROOMMATE_IMPORT_TOKEN', '')

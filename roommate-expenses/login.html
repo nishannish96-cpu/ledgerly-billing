@@ -38,6 +38,18 @@
           <button class="login-button" type="submit">Sign in <span aria-hidden="true">→</span></button>
           <p class="login-error" id="login-error" role="alert" hidden></p>
         </form>
+        <p id="setup-status-error" class="login-error" role="alert" hidden></p>
+        <div id="initial-setup" hidden>
+          <p class="account-switch">First time here? <button type="button" class="account-switch-button" id="setup-admin-toggle">Create the first admin account</button></p>
+          <p class="demo-note">One admin account can be created while this household has no accounts. Setup closes after the first account is created.</p>
+          <form id="setup-admin-form" hidden>
+            <label>Your name<input id="setup-name" type="text" autocomplete="name" placeholder="Enter your name" required maxlength="40" /></label>
+            <label>Admin username<input id="setup-username" type="text" autocomplete="username" placeholder="Choose a username" required maxlength="40" /></label>
+            <label>Admin password<div class="password-field"><input id="setup-password" type="password" autocomplete="new-password" placeholder="At least 8 characters" required minlength="8" maxlength="128" /><button type="button" class="password-toggle" data-password-target="setup-password" aria-label="Show password">◉</button></div></label>
+            <button class="login-button" type="submit">Create admin account <span aria-hidden="true">→</span></button>
+            <p class="login-error" id="setup-error" role="alert" hidden></p>
+          </form>
+        </div>
         <p class="account-switch">House admin? <button type="button" class="account-switch-button" id="admin-create-user">Sign in to create a member account</button></p>
         <p class="demo-note" id="create-user-note" hidden></p>
         <p class="demo-note">Sign in with the username and password provided for your household.</p>
@@ -47,6 +59,11 @@
   <script>
     const loginForm = document.getElementById('login-form');
     const loginError = document.getElementById('login-error');
+    const setupStatusError = document.getElementById('setup-status-error');
+    const initialSetup = document.getElementById('initial-setup');
+    const setupAdminToggle = document.getElementById('setup-admin-toggle');
+    const setupAdminForm = document.getElementById('setup-admin-form');
+    const setupError = document.getElementById('setup-error');
     const createUserButton = document.getElementById('admin-create-user');
     const createUserNote = document.getElementById('create-user-note');
 
@@ -87,6 +104,40 @@
       window.location.href = 'index.html';
     }
 
+    async function checkInitialSetup() {
+      try {
+        const response = await fetch('/api/setup/status');
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(result.error || 'Could not check account setup status.');
+        initialSetup.hidden = !result.setup_required;
+      } catch (error) {
+        setupStatusError.textContent = error.message;
+        setupStatusError.hidden = false;
+      }
+    }
+
+    setupAdminToggle.addEventListener('click', () => {
+      setupAdminForm.hidden = !setupAdminForm.hidden;
+      if (!setupAdminForm.hidden) document.getElementById('setup-name').focus();
+    });
+
+    setupAdminForm.addEventListener('submit', async event => {
+      event.preventDefault();
+      setupError.hidden = true;
+      try {
+        const result = await requestJSON('/api/setup/admin', {
+          name: document.getElementById('setup-name').value.trim(),
+          username: document.getElementById('setup-username').value.trim(),
+          password: document.getElementById('setup-password').value,
+        });
+        sessionStorage.removeItem('roomies-create-user-after-login');
+        onSignedIn(result);
+      } catch (error) {
+        setupError.textContent = error.message;
+        setupError.hidden = false;
+      }
+    });
+
     loginForm.addEventListener('submit', async event => {
       event.preventDefault();
       loginError.hidden = true;
@@ -108,6 +159,8 @@
         loginError.hidden = false;
       }
     });
+
+    checkInitialSetup();
 
   </script>
 </body>
