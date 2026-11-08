@@ -1,5 +1,6 @@
 import hashlib
 import json
+import logging
 import math
 import os
 import re
@@ -8,12 +9,15 @@ import sqlite3
 import time
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 from urllib.parse import urlparse
 
 ROOT = Path(__file__).parent
 DATABASE = Path(os.environ.get('ROOMMATE_DATABASE', str(ROOT / 'roommates.db')))
 
 NAME_PATTERN = re.compile(r'^[A-Za-z0-9 _.-]{1,40}$')
+WHATSAPP_PHONE_PATTERN = re.compile(r'^\+[1-9][0-9]{7,14}$')
 SESSION_TTL_SECONDS = 60 * 60 * 24 * 7
 
 # token -> {'user_id', 'username', 'roommate_id', 'is_admin', 'expires_at'}, cleared on restart
@@ -56,6 +60,8 @@ def initialise_database():
                 roommate_id INTEGER NOT NULL REFERENCES roommates(id) ON DELETE CASCADE,
                 household_id INTEGER NOT NULL REFERENCES households(id) ON DELETE CASCADE,
                 is_admin INTEGER NOT NULL DEFAULT 0,
+                whatsapp_phone TEXT,
+                whatsapp_opt_in INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
 
@@ -89,6 +95,10 @@ def initialise_database():
         user_columns = {row['name'] for row in database.execute('PRAGMA table_info(users)')}
         if 'household_id' not in user_columns:
             database.execute('ALTER TABLE users ADD COLUMN household_id INTEGER REFERENCES households(id) ON DELETE CASCADE')
+        if 'whatsapp_phone' not in user_columns:
+            database.execute('ALTER TABLE users ADD COLUMN whatsapp_phone TEXT')
+        if 'whatsapp_opt_in' not in user_columns:
+            database.execute('ALTER TABLE users ADD COLUMN whatsapp_opt_in INTEGER NOT NULL DEFAULT 0')
 
         unassigned_roommates = database.execute(
             'SELECT 1 FROM roommates WHERE household_id IS NULL LIMIT 1').fetchone()
@@ -144,6 +154,96 @@ def normalise_name(name):
 
 def normalise_username(username):
     return str(username or '').strip().lower()
+
+
+def normalise_whatsapp_phone(phone):
+    phone = str(phone or '').strip()
+    if not phone:
+        return None
+    if not WHATSAPP_PHONE_PATTERN.fullmatch(phone):
+        raise ValueError('Enter the WhatsApp number in international format, for example +15551234567.')
+    return phone
+
+
+def send_whatsapp_template(phone, roommate_name, username):
+    access_token = os.environ.get('WHATSAPP_ACCESS_TOKEN', '').strip()
+    phone_number_id = os.environ.get('WHATSAPP_PHONE_NUMBER_ID', '').strip()
+    api_version = os.environ.get('WHATSAPP_GRAPH_API_VERSION', '').strip()
+    template_name = os.environ.get('WHATSAPP_TEMPLATE_NAME', '').strip()
+    template_language = os.environ.get('WHATSAPP_TEMPLATE_LANGUAGE', '').strip()
+    if not all((access_token, phone_number_id, api_version, template_name, template_language)):
+        raise RuntimeError('WhatsApp Cloud API is not fully configured.')
+
+    url = f'https://graph.facebook.com/{api_version}/{phone_number_id}/messages'
+    payload = {
+        'messaging_product': 'whatsapp',
+        'to': phone,
+        'type': 'template',
+        'template': {
+            'name': template_name,
+            'language': {'code': template_language},
+            'components': [{
+                'type': 'body',
+                'parameters': [
+                    {'type': 'text', 'text': roommate_name},
+                    {'type': 'text', 'text': username},
+                ],
+            }],
+        },
+    }
+    request = Request(
+        url,
+        data=json.dumps(payload).encode(),
+        headers={
+            'Authorization': f'Bearer {access_token}',
+            'Content-Type': 'application/json',
+        },
+        method='POST',
+    )
+    try:
+        with urlopen(request, timeout=10) as response:
+            if not 200 <= response.status < 300:
+                raise RuntimeError(f'WhatsApp API returned HTTP {response.status}.')
+    except HTTPError as error:
+        raise RuntimeError(f'WhatsApp API returned HTTP {error.code}.') from None
+    except (URLError, TimeoutError) as error:
+        raise RuntimeError(f'WhatsApp API request failed: {error.reason if isinstance(error, URLError) else "timed out"}.') from None
+
+
+def notify_household_account_created(household_id, roommate_name, username):
+    with connection() as database:
+        recipients = database.execute(
+            'SELECT whatsapp_phone FROM users '
+            'WHERE household_id = ? AND whatsapp_opt_in = 1 AND whatsapp_phone IS NOT NULL',
+            (household_id,),
+        ).fetchall()
+    if not recipients:
+        return {'status': 'no_recipients', 'sent': 0, 'failed': 0}
+
+    config = (
+        'WHATSAPP_ACCESS_TOKEN',
+        'WHATSAPP_PHONE_NUMBER_ID',
+        'WHATSAPP_GRAPH_API_VERSION',
+        'WHATSAPP_TEMPLATE_NAME',
+        'WHATSAPP_TEMPLATE_LANGUAGE',
+    )
+    if any(not os.environ.get(key, '').strip() for key in config):
+        return {'status': 'not_configured', 'sent': 0, 'failed': len(recipients)}
+
+    sent = 0
+    failed = 0
+    for recipient in recipients:
+        try:
+            send_whatsapp_template(recipient['whatsapp_phone'], roommate_name, username)
+            sent += 1
+        except RuntimeError as error:
+            logging.error('WhatsApp account notification failed: %s', error)
+            failed += 1
+    return {
+        'status': 'sent' if failed == 0 else 'partial_failure',
+        'sent': sent,
+        'failed': failed,
+    }
 
 
 def create_session(user_row):
@@ -320,8 +420,16 @@ class RoommateHandler(SimpleHTTPRequestHandler):
                 WHERE payer.household_id = ? AND payee.household_id = ?
                 ORDER BY settlement_payments.id DESC
             ''', (session['household_id'], session['household_id']))]
+            whatsapp_settings = database.execute(
+                'SELECT whatsapp_phone, whatsapp_opt_in FROM users WHERE id = ? AND household_id = ?',
+                (session['user_id'], session['household_id']),
+            ).fetchone()
         return self.send_json(200, {
-            'me': public_user(session),
+            'me': {
+                **public_user(session),
+                'whatsapp_phone': whatsapp_settings['whatsapp_phone'],
+                'whatsapp_opt_in': bool(whatsapp_settings['whatsapp_opt_in']),
+            },
             'roommates': roommates,
             'expenses': expenses,
             'balances': balances,
@@ -436,6 +544,19 @@ class RoommateHandler(SimpleHTTPRequestHandler):
             if not session:
                 return self.send_json(401, {'error': 'Please sign in again.'})
 
+            if path == '/api/whatsapp/preferences':
+                phone = normalise_whatsapp_phone(payload.get('phone'))
+                opt_in = payload.get('opt_in') is True
+                if opt_in and not phone:
+                    return self.send_json(400, {'error': 'Enter your WhatsApp number before enabling notifications.'})
+                with connection() as database:
+                    database.execute(
+                        'UPDATE users SET whatsapp_phone = ?, whatsapp_opt_in = ? '
+                        'WHERE id = ? AND household_id = ?',
+                        (phone, int(opt_in), session['user_id'], session['household_id']),
+                    )
+                return self.send_json(200, {'saved': True, 'phone': phone, 'opt_in': opt_in})
+
             if path == '/api/admin/clear-transactions':
                 if not session['is_admin']:
                     return self.send_json(403, {'error': 'Only the house admin can clear transaction data.'})
@@ -501,7 +622,16 @@ class RoommateHandler(SimpleHTTPRequestHandler):
                     )
                     if not created.rowcount:
                         return self.send_json(409, {'error': 'That username is already in use.'})
-                return self.send_json(201, {'created': True, 'username': username})
+                notifications = notify_household_account_created(
+                    session['household_id'],
+                    roommate_name,
+                    username,
+                )
+                return self.send_json(201, {
+                    'created': True,
+                    'username': username,
+                    'whatsapp_notifications': notifications,
+                })
 
             if path == '/api/roommates':
                 if not session['is_admin']:

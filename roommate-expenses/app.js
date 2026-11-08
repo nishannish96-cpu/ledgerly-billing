@@ -52,6 +52,10 @@ const userIsAdminSelect = document.getElementById('user-is-admin');
 const userUsernameInput = document.getElementById('user-username');
 const userPasswordInput = document.getElementById('user-password');
 const userError = document.getElementById('user-error');
+const whatsappForm = document.getElementById('whatsapp-form');
+const whatsappPhoneInput = document.getElementById('whatsapp-phone');
+const whatsappOptInInput = document.getElementById('whatsapp-opt-in');
+const whatsappError = document.getElementById('whatsapp-error');
 adminLockedNote.hidden = isAdmin();
 adminPanel.hidden = !isAdmin();
 userManagementCard.hidden = !isAdmin();
@@ -78,6 +82,7 @@ let latestBalances = [];
 let notificationTimer;
 let knownInputKeys = null;
 let lastDataSignature = null;
+let whatsappPreferencesLoaded = false;
 
 function notify(message) {
 	appNotification.textContent = message;
@@ -122,6 +127,11 @@ async function requestJSON(path, options = {}) {
 
 async function loadData() {
 	const data = await requestJSON('/api/data');
+	if (!whatsappPreferencesLoaded) {
+		whatsappPhoneInput.value = data.me.whatsapp_phone || '';
+		whatsappOptInInput.checked = data.me.whatsapp_opt_in;
+		whatsappPreferencesLoaded = true;
+	}
 	notifyNewSharedInputs(data);
 	const signature = JSON.stringify([data.roommates, data.expenses, data.balances, data.settlements, data.settlement_payments]);
 	if (signature === lastDataSignature) return;
@@ -311,7 +321,7 @@ userForm?.addEventListener('submit', async event => {
 	userError.hidden = true;
 	const isAdminAccount = userIsAdminSelect.value === 'true';
 	try {
-		await requestJSON('/api/admin/users', {
+		const result = await requestJSON('/api/admin/users', {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({
@@ -322,10 +332,40 @@ userForm?.addEventListener('submit', async event => {
 			}),
 		});
 		userForm.reset();
-		notify(isAdminAccount ? 'Admin account created.' : 'User account created.');
+		const notifications = result.whatsapp_notifications;
+		if (notifications.status === 'not_configured') {
+			notify('Account created, but WhatsApp notifications need server setup.');
+		} else if (notifications.status === 'partial_failure') {
+			notify(`Account created; WhatsApp delivery failed for ${notifications.failed} household member(s).`);
+		} else if (notifications.sent > 0) {
+			notify(`Account created. ${notifications.sent} household member(s) notified on WhatsApp.`);
+		} else {
+			notify(isAdminAccount ? 'Admin account created.' : 'User account created.');
+		}
 	} catch (error) {
 		userError.textContent = error.message;
 		userError.hidden = false;
+	}
+});
+
+whatsappForm?.addEventListener('submit', async event => {
+	event.preventDefault();
+	whatsappError.hidden = true;
+	try {
+		const result = await requestJSON('/api/whatsapp/preferences', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				phone: whatsappPhoneInput.value.trim(),
+				opt_in: whatsappOptInInput.checked,
+			}),
+		});
+		whatsappPhoneInput.value = result.phone || '';
+		whatsappOptInInput.checked = result.opt_in;
+		notify('WhatsApp settings saved.');
+	} catch (error) {
+		whatsappError.textContent = error.message;
+		whatsappError.hidden = false;
 	}
 });
 

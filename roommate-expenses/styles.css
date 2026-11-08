@@ -34,7 +34,7 @@ button { cursor: pointer; border: 0; }
 .inline-form input { flex: 1; }
 button:disabled, select:disabled { cursor: not-allowed; opacity: 0.6; }
 
-input[type="text"], input[type="number"], input[type="password"], select {
+input[type="text"], input[type="number"], input[type="password"], input[type="tel"], select {
   width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: #fff; color: var(--ink);
 }
 input:focus, select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(91, 75, 218, 0.12); }
@@ -45,6 +45,8 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
 
 .stacked-form { display: grid; gap: 14px; }
 .stacked-form label { display: grid; gap: 6px; font-size: 12px; font-weight: 600; color: #444b5c; }
+.stacked-form .consent-label { display: flex; align-items: flex-start; gap: 8px; line-height: 1.5; }
+.consent-label input { flex: 0 0 auto; margin: 2px 0 0; }
 .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 
 .participants-box { border: 1px solid var(--line); border-radius: 8px; padding: 12px; margin: 0; }

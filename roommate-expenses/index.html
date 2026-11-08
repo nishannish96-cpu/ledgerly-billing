@@ -100,6 +100,22 @@
       </section>
 
       <section class="card wide">
+        <h2>WhatsApp account alerts</h2>
+        <p class="empty-note">Link your WhatsApp number to receive a message when a new account is created in this household. Your number is only shared with Meta when an alert is sent. You can turn alerts off at any time.</p>
+        <form id="whatsapp-form" class="stacked-form">
+          <label>WhatsApp number
+            <input id="whatsapp-phone" type="tel" autocomplete="tel" placeholder="+15551234567" />
+          </label>
+          <label class="consent-label">
+            <input id="whatsapp-opt-in" type="checkbox" />
+            I agree to receive WhatsApp notifications from Roomies when a user account is created in my household.
+          </label>
+          <button class="primary-btn" type="submit">Save WhatsApp settings</button>
+          <p id="whatsapp-error" class="error-text" hidden></p>
+        </form>
+      </section>
+
+      <section class="card wide">
         <h2>Balances</h2>
         <div class="table-wrap">
           <table class="data-table" id="balance-table">
