@@ -100,19 +100,37 @@
       </section>
 
       <section class="card wide">
-        <h2>WhatsApp account alerts</h2>
-        <p class="empty-note">Link your WhatsApp number to receive a message when a new account is created in this household. Your number is only shared with Meta when an alert is sent. You can turn alerts off at any time.</p>
+        <h2>WhatsApp notifications</h2>
+        <p class="empty-note">Link your WhatsApp number and choose which Roomies messages you agree to receive. Your number is only shared with Meta to send the notifications you select.</p>
         <form id="whatsapp-form" class="stacked-form">
           <label>WhatsApp number
             <input id="whatsapp-phone" type="tel" autocomplete="tel" placeholder="+15551234567" />
           </label>
           <label class="consent-label">
             <input id="whatsapp-opt-in" type="checkbox" />
-            I agree to receive WhatsApp notifications from Roomies when a user account is created in my household.
+            I agree to receive a direct WhatsApp message when a user account is created in my household.
+          </label>
+          <label class="consent-label">
+            <input id="whatsapp-group-opt-in" type="checkbox" />
+            I agree to receive a WhatsApp group invitation and expense and settlement notifications in my household group.
           </label>
           <button class="primary-btn" type="submit">Save WhatsApp settings</button>
           <p id="whatsapp-error" class="error-text" hidden></p>
         </form>
+      </section>
+
+      <section id="whatsapp-group-card" class="card wide" hidden>
+        <h2>Household WhatsApp group</h2>
+        <p class="empty-note">Create an invite-only group for expense and settlement updates. Members must opt in and join from the WhatsApp invitation. Groups support up to 7 household members plus the business number.</p>
+        <p id="whatsapp-group-status" class="empty-note" aria-live="polite"></p>
+        <p id="whatsapp-group-link-wrap" class="empty-note" hidden>
+          Group invite link: <a id="whatsapp-group-link" target="_blank" rel="noopener noreferrer"></a>
+        </p>
+        <div class="session-bar">
+          <button id="create-whatsapp-group" type="button" class="primary-btn">Create WhatsApp group</button>
+          <button id="send-whatsapp-group-invites" type="button" class="primary-btn" hidden>Send invites to opted-in members</button>
+        </div>
+        <p id="whatsapp-group-error" class="error-text" hidden></p>
       </section>
 
       <section class="card wide">

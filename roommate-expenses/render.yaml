@@ -24,3 +24,11 @@ services:
         sync: false
       - key: WHATSAPP_TEMPLATE_LANGUAGE
         sync: false
+      - key: WHATSAPP_APP_SECRET
+        sync: false
+      - key: WHATSAPP_WEBHOOK_VERIFY_TOKEN
+        sync: false
+      - key: WHATSAPP_GROUP_INVITE_TEMPLATE_NAME
+        sync: false
+      - key: WHATSAPP_GROUP_INVITE_TEMPLATE_LANGUAGE
+        sync: false

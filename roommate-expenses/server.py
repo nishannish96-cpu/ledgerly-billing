@@ -1,4 +1,5 @@
 import hashlib
+import hmac
 import json
 import logging
 import math
@@ -11,13 +12,14 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 ROOT = Path(__file__).parent
 DATABASE = Path(os.environ.get('ROOMMATE_DATABASE', str(ROOT / 'roommates.db')))
 
 NAME_PATTERN = re.compile(r'^[A-Za-z0-9 _.-]{1,40}$')
 WHATSAPP_PHONE_PATTERN = re.compile(r'^\+[1-9][0-9]{7,14}$')
+WHATSAPP_WEBHOOK_MAX_BYTES = 1024 * 1024
 SESSION_TTL_SECONDS = 60 * 60 * 24 * 7
 
 # token -> {'user_id', 'username', 'roommate_id', 'is_admin', 'expires_at'}, cleared on restart
@@ -62,8 +64,36 @@ def initialise_database():
                 is_admin INTEGER NOT NULL DEFAULT 0,
                 whatsapp_phone TEXT,
                 whatsapp_opt_in INTEGER NOT NULL DEFAULT 0,
+                whatsapp_group_opt_in INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+
+            CREATE TABLE IF NOT EXISTS whatsapp_groups (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                household_id INTEGER NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+                group_id TEXT UNIQUE,
+                subject TEXT NOT NULL UNIQUE,
+                invite_link TEXT,
+                status TEXT NOT NULL DEFAULT 'creating',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS whatsapp_group_participants (
+                group_id TEXT NOT NULL REFERENCES whatsapp_groups(group_id) ON DELETE CASCADE,
+                user_id TEXT NOT NULL,
+                PRIMARY KEY (group_id, user_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS whatsapp_group_invites (
+                group_id TEXT NOT NULL REFERENCES whatsapp_groups(group_id) ON DELETE CASCADE,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                status TEXT NOT NULL,
+                PRIMARY KEY (group_id, user_id)
+            );
+
+            CREATE UNIQUE INDEX IF NOT EXISTS whatsapp_groups_one_active_per_household
+            ON whatsapp_groups (household_id)
+            WHERE status IN ('creating', 'ready', 'active');
 
             CREATE TABLE IF NOT EXISTS expenses (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -99,6 +129,8 @@ def initialise_database():
             database.execute('ALTER TABLE users ADD COLUMN whatsapp_phone TEXT')
         if 'whatsapp_opt_in' not in user_columns:
             database.execute('ALTER TABLE users ADD COLUMN whatsapp_opt_in INTEGER NOT NULL DEFAULT 0')
+        if 'whatsapp_group_opt_in' not in user_columns:
+            database.execute('ALTER TABLE users ADD COLUMN whatsapp_group_opt_in INTEGER NOT NULL DEFAULT 0')
 
         unassigned_roommates = database.execute(
             'SELECT 1 FROM roommates WHERE household_id IS NULL LIMIT 1').fetchone()
@@ -165,16 +197,54 @@ def normalise_whatsapp_phone(phone):
     return phone
 
 
-def send_whatsapp_template(phone, roommate_name, username):
+def whatsapp_api_request(endpoint, payload):
     access_token = os.environ.get('WHATSAPP_ACCESS_TOKEN', '').strip()
     phone_number_id = os.environ.get('WHATSAPP_PHONE_NUMBER_ID', '').strip()
     api_version = os.environ.get('WHATSAPP_GRAPH_API_VERSION', '').strip()
+    if not all((access_token, phone_number_id, api_version)):
+        raise RuntimeError('WhatsApp Cloud API is not fully configured.')
+    if not re.fullmatch(r'[0-9]+', phone_number_id) or not re.fullmatch(r'v[0-9]+\.[0-9]+', api_version):
+        raise RuntimeError('WhatsApp Cloud API phone number ID or Graph API version is invalid.')
+
+    url = f'https://graph.facebook.com/{api_version}/{endpoint.lstrip("/")}'
+    request = Request(
+        url,
+        data=json.dumps(payload).encode(),
+        headers={
+            'Authorization': f'Bearer {access_token}',
+            'Content-Type': 'application/json',
+        },
+        method='POST',
+    )
+    try:
+        with urlopen(request, timeout=10) as response:
+            response_body = response.read()
+            if not 200 <= response.status < 300:
+                raise RuntimeError(f'WhatsApp API returned HTTP {response.status}.')
+    except HTTPError as error:
+        details = error.read()
+        try:
+            details = json.loads(details).get('error', {}).get('message', '')
+        except (json.JSONDecodeError, AttributeError):
+            details = ''
+        suffix = f': {details}' if details else ''
+        raise RuntimeError(f'WhatsApp API returned HTTP {error.code}{suffix}.') from None
+    except (URLError, TimeoutError) as error:
+        reason = error.reason if isinstance(error, URLError) else 'timed out'
+        raise RuntimeError(f'WhatsApp API request failed: {reason}.') from None
+    try:
+        return json.loads(response_body) if response_body else {}
+    except json.JSONDecodeError as error:
+        raise RuntimeError('WhatsApp API returned an invalid response.') from error
+
+
+def send_whatsapp_template(phone, roommate_name, username):
+    phone_number_id = os.environ.get('WHATSAPP_PHONE_NUMBER_ID', '').strip()
     template_name = os.environ.get('WHATSAPP_TEMPLATE_NAME', '').strip()
     template_language = os.environ.get('WHATSAPP_TEMPLATE_LANGUAGE', '').strip()
-    if not all((access_token, phone_number_id, api_version, template_name, template_language)):
+    if not all((phone_number_id, template_name, template_language)):
         raise RuntimeError('WhatsApp Cloud API is not fully configured.')
 
-    url = f'https://graph.facebook.com/{api_version}/{phone_number_id}/messages'
     payload = {
         'messaging_product': 'whatsapp',
         'to': phone,
@@ -191,23 +261,184 @@ def send_whatsapp_template(phone, roommate_name, username):
             }],
         },
     }
-    request = Request(
-        url,
-        data=json.dumps(payload).encode(),
-        headers={
-            'Authorization': f'Bearer {access_token}',
-            'Content-Type': 'application/json',
+    whatsapp_api_request(f'{phone_number_id}/messages', payload)
+
+
+def send_whatsapp_group_invite(phone, group_id):
+    phone_number_id = os.environ.get('WHATSAPP_PHONE_NUMBER_ID', '').strip()
+    template_name = os.environ.get('WHATSAPP_GROUP_INVITE_TEMPLATE_NAME', '').strip()
+    template_language = os.environ.get('WHATSAPP_GROUP_INVITE_TEMPLATE_LANGUAGE', '').strip()
+    if not all((phone_number_id, template_name, template_language)):
+        raise RuntimeError('WhatsApp group invite template is not configured.')
+    whatsapp_api_request(f'{phone_number_id}/messages', {
+        'messaging_product': 'whatsapp',
+        'to': phone,
+        'type': 'template',
+        'template': {
+            'name': template_name,
+            'language': {'code': template_language},
+            'components': [{
+                'type': 'body',
+                'parameters': [{'type': 'group_id', 'group_id': group_id}],
+            }],
         },
-        method='POST',
-    )
+    })
+
+
+def send_whatsapp_group_message(group_id, message):
+    phone_number_id = os.environ.get('WHATSAPP_PHONE_NUMBER_ID', '').strip()
+    if not phone_number_id:
+        raise RuntimeError('WhatsApp Cloud API is not fully configured.')
+    whatsapp_api_request(f'{phone_number_id}/messages', {
+        'messaging_product': 'whatsapp',
+        'recipient_type': 'group',
+        'to': group_id,
+        'type': 'text',
+        'text': {'preview_url': False, 'body': message},
+    })
+
+
+def notify_whatsapp_group(household_id, message):
     try:
-        with urlopen(request, timeout=10) as response:
-            if not 200 <= response.status < 300:
-                raise RuntimeError(f'WhatsApp API returned HTTP {response.status}.')
-    except HTTPError as error:
-        raise RuntimeError(f'WhatsApp API returned HTTP {error.code}.') from None
-    except (URLError, TimeoutError) as error:
-        raise RuntimeError(f'WhatsApp API request failed: {error.reason if isinstance(error, URLError) else "timed out"}.') from None
+        with connection() as database:
+            group = database.execute(
+                'SELECT group_id FROM whatsapp_groups '
+                'WHERE household_id = ? AND status = ?',
+                (household_id, 'active'),
+            ).fetchone()
+    except sqlite3.Error as error:
+        logging.error('WhatsApp group lookup failed: %s', error)
+        return {'status': 'failed'}
+    if not group:
+        return {'status': 'not_active'}
+    try:
+        send_whatsapp_group_message(group['group_id'], message)
+    except RuntimeError as error:
+        logging.error('WhatsApp group notification failed: %s', error)
+        return {'status': 'failed'}
+    return {'status': 'sent'}
+
+
+def send_whatsapp_group_invites(household_id):
+    if not all((
+        os.environ.get('WHATSAPP_GROUP_INVITE_TEMPLATE_NAME', '').strip(),
+        os.environ.get('WHATSAPP_GROUP_INVITE_TEMPLATE_LANGUAGE', '').strip(),
+    )):
+        raise RuntimeError('Configure the approved WhatsApp group invite template in Render first.')
+    with connection() as database:
+        group = database.execute(
+            'SELECT group_id, status FROM whatsapp_groups '
+            'WHERE household_id = ? AND status IN (?, ?) AND invite_link IS NOT NULL',
+            (household_id, 'ready', 'active'),
+        ).fetchone()
+        if not group:
+            raise RuntimeError('Create the WhatsApp group and wait for its invite link first.')
+        recipients = database.execute(
+            'SELECT id, whatsapp_phone FROM users '
+            'WHERE household_id = ? AND whatsapp_group_opt_in = 1 '
+            'AND whatsapp_phone IS NOT NULL ORDER BY id',
+            (household_id,),
+        ).fetchall()
+        if not recipients:
+            return {'status': 'no_recipients', 'sent': 0, 'failed': 0}
+        if len(recipients) > 7:
+            raise RuntimeError('A WhatsApp group can invite at most 7 household members. Ask some members to opt out before sending invites.')
+
+    sent = 0
+    failed = 0
+    for recipient in recipients:
+        with connection() as database:
+            invite = database.execute(
+                'SELECT status FROM whatsapp_group_invites WHERE group_id = ? AND user_id = ?',
+                (group['group_id'], recipient['id']),
+            ).fetchone()
+            if invite and invite['status'] == 'sent':
+                continue
+            database.execute(
+                'INSERT INTO whatsapp_group_invites (group_id, user_id, status) VALUES (?, ?, ?) '
+                'ON CONFLICT(group_id, user_id) DO UPDATE SET status = excluded.status',
+                (group['group_id'], recipient['id'], 'sending'),
+            )
+        try:
+            send_whatsapp_group_invite(recipient['whatsapp_phone'], group['group_id'])
+            status = 'sent'
+            sent += 1
+        except RuntimeError as error:
+            logging.error('WhatsApp group invite failed: %s', error)
+            status = 'failed'
+            failed += 1
+        with connection() as database:
+            database.execute(
+                'UPDATE whatsapp_group_invites SET status = ? WHERE group_id = ? AND user_id = ?',
+                (status, group['group_id'], recipient['id']),
+            )
+    status = 'sent' if failed == 0 else 'partial_failure'
+    if not sent and not failed:
+        status = 'already_sent'
+    return {'status': status, 'sent': sent, 'failed': failed}
+
+
+def process_whatsapp_group_webhook(payload):
+    for entry in payload.get('entry', []):
+        for change in entry.get('changes', []):
+            field = change.get('field')
+            value = change.get('value') or {}
+            for group_data in value.get('groups', []):
+                group_id = str(group_data.get('group_id') or '').strip()
+                if not group_id:
+                    continue
+                if field == 'group_lifecycle_update':
+                    group_type = group_data.get('type')
+                    if group_type == 'group_create':
+                        invite_link = str(group_data.get('invite_link') or '')
+                        has_errors = bool(group_data.get('errors'))
+                        if invite_link and not invite_link.startswith('https://chat.whatsapp.com/'):
+                            continue
+                        status = 'ready' if invite_link and not has_errors else 'failed'
+                        with connection() as database:
+                            database.execute(
+                                'UPDATE whatsapp_groups SET group_id = ?, invite_link = ?, status = ? '
+                                'WHERE subject = ?',
+                                (group_id, invite_link or None, status, group_data.get('subject', '')),
+                            )
+                    elif group_type == 'group_delete':
+                        with connection() as database:
+                            database.execute(
+                                'UPDATE whatsapp_groups SET status = ? WHERE group_id = ?',
+                                ('deleted', group_id),
+                            )
+                elif field == 'group_participants_update':
+                    group_type = group_data.get('type')
+                    with connection() as database:
+                        if group_type == 'group_participants_add':
+                            for participant in group_data.get('added_participants', []):
+                                user_id = participant.get('user_id')
+                                if user_id:
+                                    database.execute(
+                                        'INSERT OR IGNORE INTO whatsapp_group_participants (group_id, user_id) VALUES (?, ?)',
+                                        (group_id, str(user_id)),
+                                    )
+                            database.execute(
+                                'UPDATE whatsapp_groups SET status = ? WHERE group_id = ? AND status = ?',
+                                ('active', group_id, 'ready'),
+                            )
+                        elif group_type == 'group_participants_remove':
+                            for participant in group_data.get('removed_participants', []):
+                                user_id = participant.get('user_id')
+                                if user_id:
+                                    database.execute(
+                                        'DELETE FROM whatsapp_group_participants WHERE group_id = ? AND user_id = ?',
+                                        (group_id, str(user_id)),
+                                    )
+                            remaining = database.execute(
+                                'SELECT 1 FROM whatsapp_group_participants WHERE group_id = ? LIMIT 1',
+                                (group_id,),
+                            ).fetchone()
+                            if not remaining:
+                                database.execute(
+                                    'UPDATE whatsapp_groups SET status = ? WHERE group_id = ? AND status = ?',
+                                    ('ready', group_id, 'active'),
+                                )
 
 
 def notify_household_account_created(household_id, roommate_name, username):
@@ -375,8 +606,52 @@ class RoommateHandler(SimpleHTTPRequestHandler):
         token = auth_header[7:] if auth_header.startswith('Bearer ') else ''
         return session_for_token(token)
 
+    def handle_whatsapp_webhook_verification(self):
+        query = parse_qs(urlparse(self.path).query)
+        verify_token = os.environ.get('WHATSAPP_WEBHOOK_VERIFY_TOKEN', '').strip()
+        supplied_token = (query.get('hub.verify_token') or [''])[0]
+        mode = (query.get('hub.mode') or [''])[0]
+        challenge = (query.get('hub.challenge') or [''])[0]
+        if verify_token and mode == 'subscribe' and secrets.compare_digest(supplied_token, verify_token):
+            body = challenge.encode()
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/plain')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        return self.send_json(403, {'error': 'WhatsApp webhook verification failed.'})
+
+    def handle_whatsapp_webhook(self):
+        app_secret = os.environ.get('WHATSAPP_APP_SECRET', '').strip()
+        if not app_secret:
+            return self.send_json(503, {'error': 'WhatsApp webhook is not configured.'})
+        try:
+            length = int(self.headers.get('Content-Length', '0'))
+        except ValueError:
+            return self.send_json(400, {'error': 'Invalid webhook request.'})
+        if length <= 0 or length > WHATSAPP_WEBHOOK_MAX_BYTES:
+            return self.send_json(413, {'error': 'WhatsApp webhook payload is too large or empty.'})
+        body = self.rfile.read(length)
+        supplied_signature = self.headers.get('X-Hub-Signature-256', '')
+        expected_signature = 'sha256=' + hmac.new(
+            app_secret.encode(),
+            body,
+            hashlib.sha256,
+        ).hexdigest()
+        if not secrets.compare_digest(supplied_signature, expected_signature):
+            return self.send_json(401, {'error': 'Invalid WhatsApp webhook signature.'})
+        try:
+            payload = json.loads(body)
+        except json.JSONDecodeError:
+            return self.send_json(400, {'error': 'Invalid WhatsApp webhook payload.'})
+        process_whatsapp_group_webhook(payload)
+        return self.send_json(200, {'received': True})
+
     def do_GET(self):
         path = urlparse(self.path).path
+        if path == '/api/whatsapp/webhook':
+            return self.handle_whatsapp_webhook_verification()
         if path == '/api/setup/status':
             return self.send_json(200, {'signup_enabled': True})
         if path != '/api/data':
@@ -421,15 +696,34 @@ class RoommateHandler(SimpleHTTPRequestHandler):
                 ORDER BY settlement_payments.id DESC
             ''', (session['household_id'], session['household_id']))]
             whatsapp_settings = database.execute(
-                'SELECT whatsapp_phone, whatsapp_opt_in FROM users WHERE id = ? AND household_id = ?',
+                'SELECT whatsapp_phone, whatsapp_opt_in, whatsapp_group_opt_in '
+                'FROM users WHERE id = ? AND household_id = ?',
                 (session['user_id'], session['household_id']),
             ).fetchone()
+            whatsapp_group = database.execute(
+                'SELECT whatsapp_groups.status, whatsapp_groups.invite_link, '
+                '(SELECT COUNT(*) FROM whatsapp_group_participants '
+                'WHERE whatsapp_group_participants.group_id = whatsapp_groups.group_id) AS joined_count '
+                'FROM whatsapp_groups WHERE household_id = ? '
+                "AND whatsapp_groups.status IN ('creating', 'ready', 'active') "
+                'ORDER BY whatsapp_groups.id DESC LIMIT 1',
+                (session['household_id'],),
+            ).fetchone()
+        group_data = None
+        if whatsapp_group:
+            group_data = {
+                'status': whatsapp_group['status'],
+                'joined_count': whatsapp_group['joined_count'],
+                'invite_link': whatsapp_group['invite_link'] if session['is_admin'] else None,
+            }
         return self.send_json(200, {
             'me': {
                 **public_user(session),
                 'whatsapp_phone': whatsapp_settings['whatsapp_phone'],
                 'whatsapp_opt_in': bool(whatsapp_settings['whatsapp_opt_in']),
+                'whatsapp_group_opt_in': bool(whatsapp_settings['whatsapp_group_opt_in']),
             },
+            'whatsapp_group': group_data,
             'roommates': roommates,
             'expenses': expenses,
             'balances': balances,
@@ -439,6 +733,8 @@ class RoommateHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
+        if path == '/api/whatsapp/webhook':
+            return self.handle_whatsapp_webhook()
         try:
             payload = self.read_json()
 
@@ -545,17 +841,101 @@ class RoommateHandler(SimpleHTTPRequestHandler):
                 return self.send_json(401, {'error': 'Please sign in again.'})
 
             if path == '/api/whatsapp/preferences':
-                phone = normalise_whatsapp_phone(payload.get('phone'))
+                try:
+                    phone = normalise_whatsapp_phone(payload.get('phone'))
+                except ValueError as error:
+                    return self.send_json(400, {'error': str(error)})
                 opt_in = payload.get('opt_in') is True
-                if opt_in and not phone:
+                group_opt_in = payload.get('group_opt_in') is True
+                if (opt_in or group_opt_in) and not phone:
                     return self.send_json(400, {'error': 'Enter your WhatsApp number before enabling notifications.'})
+                if not opt_in and not group_opt_in:
+                    phone = None
                 with connection() as database:
                     database.execute(
-                        'UPDATE users SET whatsapp_phone = ?, whatsapp_opt_in = ? '
+                        'UPDATE users SET whatsapp_phone = ?, whatsapp_opt_in = ?, whatsapp_group_opt_in = ? '
                         'WHERE id = ? AND household_id = ?',
-                        (phone, int(opt_in), session['user_id'], session['household_id']),
+                        (phone, int(opt_in), int(group_opt_in), session['user_id'], session['household_id']),
                     )
-                return self.send_json(200, {'saved': True, 'phone': phone, 'opt_in': opt_in})
+                return self.send_json(200, {
+                    'saved': True,
+                    'phone': phone,
+                    'opt_in': opt_in,
+                    'group_opt_in': group_opt_in,
+                })
+
+            if path == '/api/admin/whatsapp-group':
+                if not session['is_admin']:
+                    return self.send_json(403, {'error': 'Only the house admin can create a WhatsApp group.'})
+                access_token = os.environ.get('WHATSAPP_ACCESS_TOKEN', '').strip()
+                phone_number_id = os.environ.get('WHATSAPP_PHONE_NUMBER_ID', '').strip()
+                api_version = os.environ.get('WHATSAPP_GRAPH_API_VERSION', '').strip()
+                app_secret = os.environ.get('WHATSAPP_APP_SECRET', '').strip()
+                verify_token = os.environ.get('WHATSAPP_WEBHOOK_VERIFY_TOKEN', '').strip()
+                invite_template = os.environ.get('WHATSAPP_GROUP_INVITE_TEMPLATE_NAME', '').strip()
+                invite_language = os.environ.get('WHATSAPP_GROUP_INVITE_TEMPLATE_LANGUAGE', '').strip()
+                if not all((access_token, phone_number_id, api_version, app_secret, verify_token, invite_template, invite_language)):
+                    return self.send_json(503, {'error': 'Complete the WhatsApp Groups API and webhook settings in Render before creating a group.'})
+                with connection() as database:
+                    database.execute('BEGIN IMMEDIATE')
+                    existing = database.execute(
+                        'SELECT 1 FROM whatsapp_groups WHERE household_id = ? '
+                        "AND status IN ('creating', 'ready', 'active') LIMIT 1",
+                        (session['household_id'],),
+                    ).fetchone()
+                    if existing:
+                        return self.send_json(409, {'error': 'This household already has a WhatsApp group.'})
+                    recipients = database.execute(
+                        'SELECT COUNT(*) FROM users WHERE household_id = ? '
+                        'AND whatsapp_group_opt_in = 1 AND whatsapp_phone IS NOT NULL',
+                        (session['household_id'],),
+                    ).fetchone()[0]
+                    if recipients < 1:
+                        return self.send_json(400, {'error': 'At least one household member must save a WhatsApp number and opt in to group invites.'})
+                    if recipients > 7:
+                        return self.send_json(400, {'error': 'WhatsApp groups support at most 7 household members plus the business number. Reduce the number of group opt-ins first.'})
+                    subject = f'Roomies household {session["household_id"]} {secrets.token_hex(4)}'
+                    database.execute(
+                        'INSERT INTO whatsapp_groups (household_id, subject, status) VALUES (?, ?, ?)',
+                        (session['household_id'], subject, 'creating'),
+                    )
+                try:
+                    whatsapp_api_request(f'{phone_number_id}/groups', {
+                        'messaging_product': 'whatsapp',
+                        'subject': subject,
+                        'description': 'Roomies household expense and settlement notifications.',
+                        'join_approval_mode': 'auto_approve',
+                    })
+                except RuntimeError as error:
+                    with connection() as database:
+                        database.execute(
+                            'UPDATE whatsapp_groups SET status = ? WHERE subject = ?',
+                            ('failed', subject),
+                        )
+                    logging.error('WhatsApp group creation failed: %s', error)
+                    return self.send_json(502, {'error': 'Meta could not create the WhatsApp group. Check the Meta setup and Render logs.'})
+                with connection() as database:
+                    group = database.execute(
+                        'SELECT status, invite_link FROM whatsapp_groups WHERE subject = ?',
+                        (subject,),
+                    ).fetchone()
+                return self.send_json(202, {
+                    'created': True,
+                    'group': {
+                        'status': group['status'],
+                        'joined_count': 0,
+                        'invite_link': group['invite_link'],
+                    },
+                })
+
+            if path == '/api/admin/whatsapp-group/invites':
+                if not session['is_admin']:
+                    return self.send_json(403, {'error': 'Only the house admin can send WhatsApp group invites.'})
+                try:
+                    invitations = send_whatsapp_group_invites(session['household_id'])
+                except RuntimeError as error:
+                    return self.send_json(400, {'error': str(error)})
+                return self.send_json(200, {'invitations': invitations})
 
             if path == '/api/admin/clear-transactions':
                 if not session['is_admin']:
@@ -692,6 +1072,10 @@ class RoommateHandler(SimpleHTTPRequestHandler):
                 with connection() as database:
                     # the signed-in user is always recorded as the payer, never a client-supplied name
                     payer_id = session['roommate_id']
+                    payer = database.execute(
+                        'SELECT name FROM roommates WHERE id = ? AND household_id = ?',
+                        (payer_id, session['household_id']),
+                    ).fetchone()
                     participants = []
                     for participant_name in dict.fromkeys(participant_names):
                         row = database.execute(
@@ -714,7 +1098,15 @@ class RoommateHandler(SimpleHTTPRequestHandler):
                             'INSERT INTO expense_splits (expense_id, roommate_id, share_amount) VALUES (?, ?, ?)',
                             (expense_id, participant['id'], round(share_amount, 2)),
                         )
-                return self.send_json(201, {'saved': True})
+                split_names = ', '.join(participant['name'] for participant in participants)
+                whatsapp_notification = notify_whatsapp_group(
+                    session['household_id'],
+                    f'Roomies expense: {payer["name"]} added "{description}" for SAR {amount:.2f} (split between {split_names}).',
+                )
+                return self.send_json(201, {
+                    'saved': True,
+                    'whatsapp_group_notification': whatsapp_notification,
+                })
 
             if path == '/api/settlements':
                 recipient_name = normalise_name(payload.get('to'))
@@ -728,7 +1120,7 @@ class RoommateHandler(SimpleHTTPRequestHandler):
                     return self.send_json(400, {'error': 'Select who you paid.'})
                 with connection() as database:
                     recipient = database.execute(
-                        'SELECT id FROM roommates WHERE name = ? AND household_id = ?',
+                        'SELECT id, name FROM roommates WHERE name = ? AND household_id = ?',
                         (recipient_name, session['household_id']),
                     ).fetchone()
                     if not recipient:
@@ -751,7 +1143,18 @@ class RoommateHandler(SimpleHTTPRequestHandler):
                         'INSERT INTO settlement_payments (paid_by, paid_to, amount, created_by) VALUES (?, ?, ?, ?)',
                         (session['roommate_id'], recipient['id'], amount, session['user_id']),
                     )
-                return self.send_json(201, {'saved': True})
+                    payer = database.execute(
+                        'SELECT name FROM roommates WHERE id = ? AND household_id = ?',
+                        (session['roommate_id'], session['household_id']),
+                    ).fetchone()
+                whatsapp_notification = notify_whatsapp_group(
+                    session['household_id'],
+                    f'Roomies settlement: {payer["name"]} paid {recipient["name"]} SAR {amount:.2f}.',
+                )
+                return self.send_json(201, {
+                    'saved': True,
+                    'whatsapp_group_notification': whatsapp_notification,
+                })
 
             if path == '/api/expenses/delete':
                 try:

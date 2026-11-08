@@ -55,10 +55,19 @@ const userError = document.getElementById('user-error');
 const whatsappForm = document.getElementById('whatsapp-form');
 const whatsappPhoneInput = document.getElementById('whatsapp-phone');
 const whatsappOptInInput = document.getElementById('whatsapp-opt-in');
+const whatsappGroupOptInInput = document.getElementById('whatsapp-group-opt-in');
 const whatsappError = document.getElementById('whatsapp-error');
+const whatsappGroupCard = document.getElementById('whatsapp-group-card');
+const whatsappGroupStatus = document.getElementById('whatsapp-group-status');
+const whatsappGroupLinkWrap = document.getElementById('whatsapp-group-link-wrap');
+const whatsappGroupLink = document.getElementById('whatsapp-group-link');
+const createWhatsappGroupButton = document.getElementById('create-whatsapp-group');
+const sendWhatsappGroupInvitesButton = document.getElementById('send-whatsapp-group-invites');
+const whatsappGroupError = document.getElementById('whatsapp-group-error');
 adminLockedNote.hidden = isAdmin();
 adminPanel.hidden = !isAdmin();
 userManagementCard.hidden = !isAdmin();
+whatsappGroupCard.hidden = !isAdmin();
 
 const expenseForm = document.getElementById('expense-form');
 const expenseDescription = document.getElementById('expense-description');
@@ -97,6 +106,34 @@ function notify(message) {
 	}
 }
 
+function notifyGroupDelivery(notification) {
+	if (notification.status === 'failed') {
+		notify('Saved, but the WhatsApp group message could not be sent.');
+	} else if (notification.status === 'not_active') {
+		notify('Saved, but the WhatsApp group is not active yet. A member must join using the invite first.');
+	}
+}
+
+function renderWhatsappGroup(group) {
+	const hasGroup = Boolean(group);
+	createWhatsappGroupButton.hidden = hasGroup;
+	sendWhatsappGroupInvitesButton.hidden = !group || !['ready', 'active'].includes(group.status);
+	whatsappGroupLinkWrap.hidden = !group?.invite_link;
+	if (group?.invite_link) {
+		whatsappGroupLink.href = group.invite_link;
+		whatsappGroupLink.textContent = group.invite_link;
+	}
+	if (!group) {
+		whatsappGroupStatus.textContent = 'No group created yet.';
+	} else if (group.status === 'creating') {
+		whatsappGroupStatus.textContent = 'Creating the group. Waiting for Meta to provide its invite link.';
+	} else if (group.status === 'ready') {
+		whatsappGroupStatus.textContent = 'Group created. Waiting for a member to join before expense and settlement alerts can be sent.';
+	} else {
+		whatsappGroupStatus.textContent = `Group active with ${group.joined_count} member(s). Expense and settlement updates will be posted here.`;
+	}
+}
+
 function notifyNewSharedInputs(data) {
 	const inputs = [
 		...(data.roommates || []).map(roommate => ({ key: `roommate:${roommate.id}`, message: `${roommate.name} was added to the household.` })),
@@ -130,8 +167,10 @@ async function loadData() {
 	if (!whatsappPreferencesLoaded) {
 		whatsappPhoneInput.value = data.me.whatsapp_phone || '';
 		whatsappOptInInput.checked = data.me.whatsapp_opt_in;
+		whatsappGroupOptInInput.checked = data.me.whatsapp_group_opt_in;
 		whatsappPreferencesLoaded = true;
 	}
+	renderWhatsappGroup(data.whatsapp_group);
 	notifyNewSharedInputs(data);
 	const signature = JSON.stringify([data.roommates, data.expenses, data.balances, data.settlements, data.settlement_payments]);
 	if (signature === lastDataSignature) return;
@@ -240,12 +279,13 @@ settlementForm.addEventListener('submit', async event => {
 	event.preventDefault();
 	settlementError.hidden = true;
 	try {
-		await requestJSON('/api/settlements', {
+		const result = await requestJSON('/api/settlements', {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({ to: settlementRecipient.value, amount: settlementAmount.value }),
 		});
 		settlementForm.reset();
+		notifyGroupDelivery(result.whatsapp_group_notification);
 		await loadData();
 	} catch (error) {
 		settlementError.textContent = error.message;
@@ -358,14 +398,54 @@ whatsappForm?.addEventListener('submit', async event => {
 			body: JSON.stringify({
 				phone: whatsappPhoneInput.value.trim(),
 				opt_in: whatsappOptInInput.checked,
+				group_opt_in: whatsappGroupOptInInput.checked,
 			}),
 		});
 		whatsappPhoneInput.value = result.phone || '';
 		whatsappOptInInput.checked = result.opt_in;
+		whatsappGroupOptInInput.checked = result.group_opt_in;
 		notify('WhatsApp settings saved.');
 	} catch (error) {
 		whatsappError.textContent = error.message;
 		whatsappError.hidden = false;
+	}
+});
+
+createWhatsappGroupButton?.addEventListener('click', async () => {
+	whatsappGroupError.hidden = true;
+	createWhatsappGroupButton.disabled = true;
+	try {
+		await requestJSON('/api/admin/whatsapp-group', { method: 'POST' });
+		notify('WhatsApp group creation requested. The invite link will appear here shortly.');
+		await loadData();
+	} catch (error) {
+		whatsappGroupError.textContent = error.message;
+		whatsappGroupError.hidden = false;
+	} finally {
+		createWhatsappGroupButton.disabled = false;
+	}
+});
+
+sendWhatsappGroupInvitesButton?.addEventListener('click', async () => {
+	whatsappGroupError.hidden = true;
+	sendWhatsappGroupInvitesButton.disabled = true;
+	try {
+		const result = await requestJSON('/api/admin/whatsapp-group/invites', { method: 'POST' });
+		const invitations = result.invitations;
+		if (invitations.status === 'partial_failure') {
+			notify(`WhatsApp invites sent to ${invitations.sent}; failed for ${invitations.failed} member(s).`);
+		} else if (invitations.status === 'already_sent') {
+			notify('Invites have already been sent to all opted-in members.');
+		} else if (invitations.status === 'no_recipients') {
+			notify('No household members have opted in to WhatsApp group invites.');
+		} else {
+			notify(`WhatsApp group invitations sent to ${invitations.sent} member(s).`);
+		}
+	} catch (error) {
+		whatsappGroupError.textContent = error.message;
+		whatsappGroupError.hidden = false;
+	} finally {
+		sendWhatsappGroupInvitesButton.disabled = false;
 	}
 });
 
@@ -376,7 +456,7 @@ expenseForm.addEventListener('submit', async event => {
 	const description = expenseDescription.value.trim();
 	const amount = expenseAmount.value;
 	try {
-		await requestJSON('/api/expenses', {
+		const result = await requestJSON('/api/expenses', {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({
@@ -386,6 +466,7 @@ expenseForm.addEventListener('submit', async event => {
 			}),
 		});
 		expenseForm.reset();
+		notifyGroupDelivery(result.whatsapp_group_notification);
 		await loadData();
 	} catch (error) {
 		expenseError.textContent = error.message;
