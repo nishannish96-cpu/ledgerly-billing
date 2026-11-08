@@ -40,13 +40,13 @@
         </form>
         <p id="setup-status-error" class="login-error" role="alert" hidden></p>
         <div id="initial-setup" hidden>
-          <p class="account-switch">First time here? <button type="button" class="account-switch-button" id="setup-admin-toggle">Create the first admin account</button></p>
-          <p class="demo-note">Only use this if the household has no admin yet. Setup closes after an admin is created.</p>
+          <p class="account-switch">New to Roomies? <button type="button" class="account-switch-button" id="setup-admin-toggle">Create account</button></p>
+          <p class="demo-note">Create your household account. Your account will be the admin, and your expenses stay separate from other households.</p>
           <form id="setup-admin-form" hidden>
             <label>Your name<input id="setup-name" type="text" autocomplete="name" placeholder="Enter your name" required maxlength="40" /></label>
             <label>Admin username<input id="setup-username" type="text" autocomplete="username" placeholder="Choose a username" required maxlength="40" /></label>
             <label>Admin password<div class="password-field"><input id="setup-password" type="password" autocomplete="new-password" placeholder="At least 8 characters" required minlength="8" maxlength="128" /><button type="button" class="password-toggle" data-password-target="setup-password" aria-label="Show password">◉</button></div></label>
-            <button class="login-button" type="submit">Create admin account <span aria-hidden="true">→</span></button>
+            <button class="login-button" type="submit">Create household account <span aria-hidden="true">→</span></button>
             <p class="login-error" id="setup-error" role="alert" hidden></p>
           </form>
         </div>
@@ -109,7 +109,7 @@
         const response = await fetch('/api/setup/status');
         const result = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(result.error || 'Could not check account setup status.');
-        initialSetup.hidden = !result.setup_required;
+        initialSetup.hidden = !result.signup_enabled;
       } catch (error) {
         setupStatusError.textContent = error.message;
         setupStatusError.hidden = false;

@@ -36,9 +36,15 @@ def connection():
 def initialise_database():
     with connection() as database:
         database.executescript('''
+            CREATE TABLE IF NOT EXISTS households (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
             CREATE TABLE IF NOT EXISTS roommates (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                name TEXT NOT NULL COLLATE NOCASE,
+                household_id INTEGER NOT NULL REFERENCES households(id) ON DELETE CASCADE,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
 
@@ -48,6 +54,7 @@ def initialise_database():
                 password_hash TEXT NOT NULL,
                 password_salt TEXT NOT NULL,
                 roommate_id INTEGER NOT NULL REFERENCES roommates(id) ON DELETE CASCADE,
+                household_id INTEGER NOT NULL REFERENCES households(id) ON DELETE CASCADE,
                 is_admin INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
@@ -76,6 +83,59 @@ def initialise_database():
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
         ''')
+        roommate_columns = {row['name'] for row in database.execute('PRAGMA table_info(roommates)')}
+        if 'household_id' not in roommate_columns:
+            database.execute('ALTER TABLE roommates ADD COLUMN household_id INTEGER REFERENCES households(id) ON DELETE CASCADE')
+        user_columns = {row['name'] for row in database.execute('PRAGMA table_info(users)')}
+        if 'household_id' not in user_columns:
+            database.execute('ALTER TABLE users ADD COLUMN household_id INTEGER REFERENCES households(id) ON DELETE CASCADE')
+
+        unassigned_roommates = database.execute(
+            'SELECT 1 FROM roommates WHERE household_id IS NULL LIMIT 1').fetchone()
+        unassigned_users = database.execute(
+            'SELECT 1 FROM users WHERE household_id IS NULL LIMIT 1').fetchone()
+        if unassigned_roommates or unassigned_users:
+            household_id = database.execute('INSERT INTO households DEFAULT VALUES').lastrowid
+            database.execute(
+                'UPDATE roommates SET household_id = ? WHERE household_id IS NULL',
+                (household_id,),
+            )
+            database.execute('''
+                UPDATE users
+                SET household_id = (
+                    SELECT roommates.household_id
+                    FROM roommates
+                    WHERE roommates.id = users.roommate_id
+                )
+                WHERE household_id IS NULL
+            ''')
+
+        roommate_sql = database.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'roommates'").fetchone()['sql']
+        if 'UNIQUE' in roommate_sql.upper():
+            database.commit()
+            database.execute('PRAGMA foreign_keys = OFF')
+            database.execute('''
+                CREATE TABLE roommates_new (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL COLLATE NOCASE,
+                    household_id INTEGER NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            database.execute('''
+                INSERT INTO roommates_new (id, name, household_id, created_at)
+                SELECT id, name, household_id, created_at FROM roommates
+            ''')
+            database.execute('DROP TABLE roommates')
+            database.execute('ALTER TABLE roommates_new RENAME TO roommates')
+            database.commit()
+            database.execute('PRAGMA foreign_keys = ON')
+
+        database.execute('''
+            CREATE UNIQUE INDEX IF NOT EXISTS roommates_household_name
+            ON roommates (household_id, name COLLATE NOCASE)
+        ''')
 
 
 def normalise_name(name):
@@ -92,6 +152,7 @@ def create_session(user_row):
         'user_id': user_row['id'],
         'username': user_row['username'],
         'roommate_id': user_row['roommate_id'],
+        'household_id': user_row['household_id'],
         'is_admin': bool(user_row['is_admin']),
         'expires_at': time.time() + SESSION_TTL_SECONDS,
     }
@@ -112,16 +173,45 @@ def public_user(session):
     return {'username': session['username'], 'is_admin': session['is_admin']}
 
 
-def compute_balances(database):
-    roommates = database.execute('SELECT id, name FROM roommates ORDER BY name COLLATE NOCASE').fetchall()
+def compute_balances(database, household_id):
+    roommates = database.execute(
+        'SELECT id, name FROM roommates WHERE household_id = ? ORDER BY name COLLATE NOCASE',
+        (household_id,),
+    ).fetchall()
     paid_totals = {row['paid_by']: row['total'] for row in database.execute(
-        'SELECT paid_by, SUM(amount) AS total FROM expenses GROUP BY paid_by')}
+        'SELECT expenses.paid_by, SUM(expenses.amount) AS total FROM expenses '
+        'JOIN roommates ON roommates.id = expenses.paid_by '
+        'WHERE roommates.household_id = ? GROUP BY expenses.paid_by',
+        (household_id,),
+    )}
     share_totals = {row['roommate_id']: row['total'] for row in database.execute(
-        'SELECT roommate_id, SUM(share_amount) AS total FROM expense_splits GROUP BY roommate_id')}
+        'SELECT expense_splits.roommate_id, SUM(expense_splits.share_amount) AS total '
+        'FROM expense_splits '
+        'JOIN expenses ON expenses.id = expense_splits.expense_id '
+        'JOIN roommates ON roommates.id = expense_splits.roommate_id '
+        'JOIN roommates AS payer ON payer.id = expenses.paid_by '
+        'WHERE roommates.household_id = ? AND payer.household_id = ? '
+        'GROUP BY expense_splits.roommate_id',
+        (household_id, household_id),
+    )}
     settled_paid = {row['paid_by']: row['total'] for row in database.execute(
-        'SELECT paid_by, SUM(amount) AS total FROM settlement_payments GROUP BY paid_by')}
+        'SELECT settlement_payments.paid_by, SUM(settlement_payments.amount) AS total '
+        'FROM settlement_payments '
+        'JOIN roommates AS payer ON payer.id = settlement_payments.paid_by '
+        'JOIN roommates AS payee ON payee.id = settlement_payments.paid_to '
+        'WHERE payer.household_id = ? AND payee.household_id = ? '
+        'GROUP BY settlement_payments.paid_by',
+        (household_id, household_id),
+    )}
     settled_received = {row['paid_to']: row['total'] for row in database.execute(
-        'SELECT paid_to, SUM(amount) AS total FROM settlement_payments GROUP BY paid_to')}
+        'SELECT settlement_payments.paid_to, SUM(settlement_payments.amount) AS total '
+        'FROM settlement_payments '
+        'JOIN roommates AS payer ON payer.id = settlement_payments.paid_by '
+        'JOIN roommates AS payee ON payee.id = settlement_payments.paid_to '
+        'WHERE payer.household_id = ? AND payee.household_id = ? '
+        'GROUP BY settlement_payments.paid_to',
+        (household_id, household_id),
+    )}
     balances = []
     for roommate in roommates:
         paid = round(paid_totals.get(roommate['id'], 0.0), 2)
@@ -188,27 +278,29 @@ class RoommateHandler(SimpleHTTPRequestHandler):
     def do_GET(self):
         path = urlparse(self.path).path
         if path == '/api/setup/status':
-            with connection() as database:
-                setup_required = database.execute('SELECT 1 FROM users WHERE is_admin = 1 LIMIT 1').fetchone() is None
-            return self.send_json(200, {'setup_required': setup_required})
+            return self.send_json(200, {'signup_enabled': True})
         if path != '/api/data':
             return super().do_GET()
         session = self.current_session()
         if not session:
             return self.send_json(401, {'error': 'Please sign in again.'})
         with connection() as database:
-            roommates = [dict(row) for row in database.execute('SELECT id, name FROM roommates ORDER BY name COLLATE NOCASE')]
+            roommates = [dict(row) for row in database.execute(
+                'SELECT id, name FROM roommates WHERE household_id = ? ORDER BY name COLLATE NOCASE',
+                (session['household_id'],),
+            )]
             expenses = []
             for expense in database.execute('''
                 SELECT expenses.id, expenses.description, expenses.amount, expenses.created_at, roommates.name AS paid_by
                 FROM expenses JOIN roommates ON roommates.id = expenses.paid_by
+                WHERE roommates.household_id = ?
                 ORDER BY expenses.id DESC
-            '''):
+            ''', (session['household_id'],)):
                 splits = database.execute('''
                     SELECT roommates.name AS name, expense_splits.share_amount AS share_amount
                     FROM expense_splits JOIN roommates ON roommates.id = expense_splits.roommate_id
-                    WHERE expense_splits.expense_id = ?
-                ''', (expense['id'],)).fetchall()
+                    WHERE expense_splits.expense_id = ? AND roommates.household_id = ?
+                ''', (expense['id'], session['household_id'])).fetchall()
                 expenses.append({
                     'id': expense['id'],
                     'description': expense['description'],
@@ -217,7 +309,7 @@ class RoommateHandler(SimpleHTTPRequestHandler):
                     'created_at': expense['created_at'],
                     'participants': [dict(s) for s in splits],
                 })
-            balances = compute_balances(database)
+            balances = compute_balances(database, session['household_id'])
             settlements = simplify_settlements(balances)
             settlement_payments = [dict(row) for row in database.execute('''
                 SELECT settlement_payments.id, settlement_payments.amount, settlement_payments.created_at,
@@ -225,8 +317,9 @@ class RoommateHandler(SimpleHTTPRequestHandler):
                 FROM settlement_payments
                 JOIN roommates AS payer ON payer.id = settlement_payments.paid_by
                 JOIN roommates AS payee ON payee.id = settlement_payments.paid_to
+                WHERE payer.household_id = ? AND payee.household_id = ?
                 ORDER BY settlement_payments.id DESC
-            ''')]
+            ''', (session['household_id'], session['household_id']))]
         return self.send_json(200, {
             'me': public_user(session),
             'roommates': roommates,
@@ -253,15 +346,18 @@ class RoommateHandler(SimpleHTTPRequestHandler):
                     return self.send_json(400, {'error': 'Password must be between 8 and 128 characters.'})
                 with connection() as database:
                     database.execute('BEGIN IMMEDIATE')
-                    if database.execute('SELECT 1 FROM users WHERE is_admin = 1 LIMIT 1').fetchone():
-                        return self.send_json(409, {'error': 'An admin account already exists. Please sign in as the house admin.'})
-                    roommate = database.execute('SELECT id FROM roommates WHERE name = ?', (name,)).fetchone()
-                    roommate_id = roommate['id'] if roommate else database.execute(
-                        'INSERT INTO roommates (name) VALUES (?)', (name,)).lastrowid
+                    if database.execute('SELECT 1 FROM users WHERE username = ?', (username,)).fetchone():
+                        return self.send_json(409, {'error': 'That username is already in use. Choose another username.'})
+                    household_id = database.execute('INSERT INTO households DEFAULT VALUES').lastrowid
+                    roommate_id = database.execute(
+                        'INSERT INTO roommates (name, household_id) VALUES (?, ?)',
+                        (name, household_id),
+                    ).lastrowid
                     salt, digest = password_hash(password)
                     database.execute(
-                        'INSERT INTO users (username, password_hash, password_salt, roommate_id, is_admin) VALUES (?, ?, ?, ?, 1)',
-                        (username, digest, salt, roommate_id),
+                        'INSERT INTO users (username, password_hash, password_salt, roommate_id, household_id, is_admin) '
+                        'VALUES (?, ?, ?, ?, ?, 1)',
+                        (username, digest, salt, roommate_id, household_id),
                     )
                     user = database.execute('SELECT * FROM users WHERE username = ?', (username,)).fetchone()
                 token = create_session(user)
@@ -295,15 +391,22 @@ class RoommateHandler(SimpleHTTPRequestHandler):
                 with connection() as database:
                     if database.execute('SELECT 1 FROM users LIMIT 1').fetchone():
                         return self.send_json(409, {'error': 'Render already has user accounts; no data was changed.'})
+                    household_id = database.execute('INSERT INTO households DEFAULT VALUES').lastrowid
                     for user in users:
                         username = normalise_username(user['username'])
                         roommate_name = normalise_name(user['roommate_name'])
-                        roommate = database.execute('SELECT id FROM roommates WHERE name = ?', (roommate_name,)).fetchone()
+                        roommate = database.execute(
+                            'SELECT id FROM roommates WHERE name = ? AND household_id = ?',
+                            (roommate_name, household_id),
+                        ).fetchone()
                         roommate_id = roommate['id'] if roommate else database.execute(
-                            'INSERT INTO roommates (name) VALUES (?)', (roommate_name,)).lastrowid
+                            'INSERT INTO roommates (name, household_id) VALUES (?, ?)',
+                            (roommate_name, household_id),
+                        ).lastrowid
                         database.execute(
-                            'INSERT INTO users (username, password_hash, password_salt, roommate_id, is_admin) VALUES (?, ?, ?, ?, ?)',
-                            (username, user['password_hash'], user['password_salt'], roommate_id, int(bool(user.get('is_admin')))),
+                            'INSERT INTO users (username, password_hash, password_salt, roommate_id, household_id, is_admin) '
+                            'VALUES (?, ?, ?, ?, ?, ?)',
+                            (username, user['password_hash'], user['password_salt'], roommate_id, household_id, int(bool(user.get('is_admin')))),
                         )
                 return self.send_json(201, {'imported': len(users)})
 
@@ -339,11 +442,36 @@ class RoommateHandler(SimpleHTTPRequestHandler):
                 if payload.get('confirm') is not True:
                     return self.send_json(400, {'error': 'Explicit confirmation is required.'})
                 with connection() as database:
-                    expenses = database.execute('SELECT COUNT(*) FROM expenses').fetchone()[0]
-                    settlements = database.execute('SELECT COUNT(*) FROM settlement_payments').fetchone()[0]
-                    database.execute('DELETE FROM expense_splits')
-                    database.execute('DELETE FROM expenses')
-                    database.execute('DELETE FROM settlement_payments')
+                    expenses = database.execute('''
+                        SELECT COUNT(*) FROM expenses
+                        JOIN roommates ON roommates.id = expenses.paid_by
+                        WHERE roommates.household_id = ?
+                    ''', (session['household_id'],)).fetchone()[0]
+                    settlements = database.execute('''
+                        SELECT COUNT(*) FROM settlement_payments
+                        JOIN roommates ON roommates.id = settlement_payments.paid_by
+                        WHERE roommates.household_id = ?
+                    ''', (session['household_id'],)).fetchone()[0]
+                    database.execute('''
+                        DELETE FROM expense_splits
+                        WHERE expense_id IN (
+                            SELECT expenses.id FROM expenses
+                            JOIN roommates ON roommates.id = expenses.paid_by
+                            WHERE roommates.household_id = ?
+                        )
+                    ''', (session['household_id'],))
+                    database.execute('''
+                        DELETE FROM expenses
+                        WHERE paid_by IN (
+                            SELECT id FROM roommates WHERE household_id = ?
+                        )
+                    ''', (session['household_id'],))
+                    database.execute('''
+                        DELETE FROM settlement_payments
+                        WHERE paid_by IN (
+                            SELECT id FROM roommates WHERE household_id = ?
+                        )
+                    ''', (session['household_id'],))
                 return self.send_json(200, {'cleared': {'expenses': expenses, 'settlements': settlements}})
 
             if path == '/api/admin/users':
@@ -352,19 +480,24 @@ class RoommateHandler(SimpleHTTPRequestHandler):
                 username = normalise_username(payload.get('username'))
                 password = payload.get('password')
                 roommate_name = normalise_name(payload.get('roommate_name'))
+                is_admin = payload.get('is_admin') is True
                 if not NAME_PATTERN.fullmatch(username):
                     return self.send_json(400, {'error': 'Enter a username using letters, numbers, spaces, - or _ (max 40 characters).'})
                 if not isinstance(password, str) or not 8 <= len(password) <= 128:
                     return self.send_json(400, {'error': 'Password must be between 8 and 128 characters.'})
                 with connection() as database:
-                    roommate = database.execute('SELECT id FROM roommates WHERE name = ?', (roommate_name,)).fetchone()
+                    roommate = database.execute(
+                        'SELECT id FROM roommates WHERE name = ? AND household_id = ?',
+                        (roommate_name, session['household_id']),
+                    ).fetchone()
                     if not roommate:
                         return self.send_json(404, {'error': 'Select an existing household member.'})
                     salt, digest = password_hash(password)
                     created = database.execute(
-                        'INSERT INTO users (username, password_hash, password_salt, roommate_id) VALUES (?, ?, ?, ?) '
+                        'INSERT INTO users (username, password_hash, password_salt, roommate_id, household_id, is_admin) '
+                        'VALUES (?, ?, ?, ?, ?, ?) '
                         'ON CONFLICT(username) DO NOTHING',
-                        (username, digest, salt, roommate['id']),
+                        (username, digest, salt, roommate['id'], session['household_id'], int(is_admin)),
                     )
                     if not created.rowcount:
                         return self.send_json(409, {'error': 'That username is already in use.'})
@@ -377,9 +510,15 @@ class RoommateHandler(SimpleHTTPRequestHandler):
                 if not NAME_PATTERN.match(name):
                     return self.send_json(400, {'error': 'Enter a name using letters, numbers, spaces, - or _ (max 40 characters).'})
                 with connection() as database:
-                    if database.execute('SELECT 1 FROM roommates WHERE name = ?', (name,)).fetchone():
+                    if database.execute(
+                        'SELECT 1 FROM roommates WHERE name = ? AND household_id = ?',
+                        (name, session['household_id']),
+                    ).fetchone():
                         return self.send_json(409, {'error': 'That roommate already exists.'})
-                    database.execute('INSERT INTO roommates (name) VALUES (?)', (name,))
+                    database.execute(
+                        'INSERT INTO roommates (name, household_id) VALUES (?, ?)',
+                        (name, session['household_id']),
+                    )
                 return self.send_json(201, {'saved': True})
 
             if path == '/api/roommates/delete':
@@ -387,12 +526,21 @@ class RoommateHandler(SimpleHTTPRequestHandler):
                     return self.send_json(403, {'error': 'Only the admin can remove roommates.'})
                 name = normalise_name(payload.get('name'))
                 with connection() as database:
-                    roommate = database.execute('SELECT id FROM roommates WHERE name = ?', (name,)).fetchone()
+                    roommate = database.execute(
+                        'SELECT id FROM roommates WHERE name = ? AND household_id = ?',
+                        (name, session['household_id']),
+                    ).fetchone()
                     if not roommate:
                         return self.send_json(404, {'error': 'Roommate not found.'})
-                    if database.execute('SELECT 1 FROM expenses WHERE paid_by = ? LIMIT 1', (roommate['id'],)).fetchone():
+                    if database.execute(
+                        'SELECT 1 FROM expenses WHERE paid_by = ? LIMIT 1',
+                        (roommate['id'],),
+                    ).fetchone():
                         return self.send_json(409, {'error': 'Cannot remove a roommate who has recorded expenses.'})
-                    if database.execute('SELECT 1 FROM users WHERE roommate_id = ? LIMIT 1', (roommate['id'],)).fetchone():
+                    if database.execute(
+                        'SELECT 1 FROM users WHERE roommate_id = ? AND household_id = ? LIMIT 1',
+                        (roommate['id'], session['household_id']),
+                    ).fetchone():
                         return self.send_json(409, {'error': 'Cannot remove a roommate who has a login account.'})
                     database.execute('DELETE FROM roommates WHERE id = ?', (roommate['id'],))
                 return self.send_json(200, {'saved': True})
@@ -416,7 +564,10 @@ class RoommateHandler(SimpleHTTPRequestHandler):
                     payer_id = session['roommate_id']
                     participants = []
                     for participant_name in dict.fromkeys(participant_names):
-                        row = database.execute('SELECT id, name FROM roommates WHERE name = ?', (participant_name,)).fetchone()
+                        row = database.execute(
+                            'SELECT id, name FROM roommates WHERE name = ? AND household_id = ?',
+                            (participant_name, session['household_id']),
+                        ).fetchone()
                         if not row:
                             return self.send_json(404, {'error': f'Roommate "{participant_name}" was not found.'})
                         participants.append(row)
@@ -446,12 +597,17 @@ class RoommateHandler(SimpleHTTPRequestHandler):
                 if not recipient_name:
                     return self.send_json(400, {'error': 'Select who you paid.'})
                 with connection() as database:
-                    recipient = database.execute('SELECT id FROM roommates WHERE name = ?', (recipient_name,)).fetchone()
+                    recipient = database.execute(
+                        'SELECT id FROM roommates WHERE name = ? AND household_id = ?',
+                        (recipient_name, session['household_id']),
+                    ).fetchone()
                     if not recipient:
                         return self.send_json(404, {'error': 'Recipient roommate was not found.'})
                     if recipient['id'] == session['roommate_id']:
                         return self.send_json(400, {'error': 'You cannot record a payment to yourself.'})
-                    balances = {row['id']: row for row in compute_balances(database)}
+                    balances = {
+                        row['id']: row for row in compute_balances(database, session['household_id'])
+                    }
                     payer_balance = balances.get(session['roommate_id'])
                     recipient_balance = balances.get(recipient['id'])
                     if not payer_balance or payer_balance['net'] >= -0.005:
@@ -473,7 +629,12 @@ class RoommateHandler(SimpleHTTPRequestHandler):
                 except (TypeError, ValueError):
                     return self.send_json(400, {'error': 'Invalid expense id.'})
                 with connection() as database:
-                    expense = database.execute('SELECT paid_by FROM expenses WHERE id = ?', (expense_id,)).fetchone()
+                    expense = database.execute('''
+                        SELECT expenses.paid_by
+                        FROM expenses
+                        JOIN roommates ON roommates.id = expenses.paid_by
+                        WHERE expenses.id = ? AND roommates.household_id = ?
+                    ''', (expense_id, session['household_id'])).fetchone()
                     if not expense:
                         return self.send_json(404, {'error': 'Expense not found.'})
                     if expense['paid_by'] != session['roommate_id']:

@@ -61,7 +61,7 @@
         </form>
       </section>
 
-      <section class="card wide" hidden>
+      <section class="card wide">
         <h2>Roommates</h2>
         <ul id="roommate-list" class="chip-list"></ul>
 
@@ -81,6 +81,12 @@
         <form id="user-form" class="stacked-form">
           <label>Household member
             <select id="user-roommate" required></select>
+          </label>
+          <label>Account type
+            <select id="user-is-admin">
+              <option value="false">Member</option>
+              <option value="true">House admin</option>
+            </select>
           </label>
           <label>Username
             <input id="user-username" type="text" autocomplete="off" placeholder="Choose a username" required maxlength="40" />

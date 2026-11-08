@@ -48,6 +48,7 @@ const adminPanel = document.getElementById('admin-panel');
 const userManagementCard = document.getElementById('user-management-card');
 const userForm = document.getElementById('user-form');
 const userRoommateSelect = document.getElementById('user-roommate');
+const userIsAdminSelect = document.getElementById('user-is-admin');
 const userUsernameInput = document.getElementById('user-username');
 const userPasswordInput = document.getElementById('user-password');
 const userError = document.getElementById('user-error');
@@ -308,6 +309,7 @@ roommateForm?.addEventListener('submit', async event => {
 userForm?.addEventListener('submit', async event => {
 	event.preventDefault();
 	userError.hidden = true;
+	const isAdminAccount = userIsAdminSelect.value === 'true';
 	try {
 		await requestJSON('/api/admin/users', {
 			method: 'POST',
@@ -316,10 +318,11 @@ userForm?.addEventListener('submit', async event => {
 				username: userUsernameInput.value.trim(),
 				password: userPasswordInput.value,
 				roommate_name: userRoommateSelect.value,
+				is_admin: isAdminAccount,
 			}),
 		});
 		userForm.reset();
-		notify('User account created.');
+		notify(isAdminAccount ? 'Admin account created.' : 'User account created.');
 	} catch (error) {
 		userError.textContent = error.message;
 		userError.hidden = false;
